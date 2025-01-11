@@ -905,6 +905,7 @@ dependencies = [
  "object",
  "serde",
  "serde_json",
+ "useit_decoder",
 ]
 
 [[package]]
@@ -1523,6 +1524,14 @@ dependencies = [
  "form_urlencoded",
  "idna",
  "percent-encoding",
+]
+
+[[package]]
+name = "useit_decoder"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
 ]
 
 [[package]]

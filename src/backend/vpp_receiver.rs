@@ -110,7 +110,10 @@ impl AbstractReceiver for VPPReceiver {
       // addr
       self.writer.write_all(format!("PATH:{:#x}-", path.addr).as_bytes()).unwrap();
       // path, each taken and not taken
-      self.writer.write_all(format!("{:?}\n", path.path).as_bytes()).unwrap();
+      self.writer.write_all(format!("{}\n", path.path.iter()
+          .map(|&b| if b { '1' } else { '0' })
+          .collect::<String>())
+          .as_bytes()).unwrap();
       // information about the path, can obtain from the stack unwinder
       let symbol_info = self.stack_unwinder.get_symbol_info(path.addr);
       self.writer.write_all(format!("INFO: {}: {}, line: {}\n", symbol_info.name, symbol_info.file, symbol_info.line).as_bytes()).unwrap();
