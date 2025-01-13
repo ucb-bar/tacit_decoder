@@ -18,6 +18,7 @@ mod backend {
     pub mod stack_unwinder;
     pub mod speedscope_receiver;
     pub mod vpp_receiver;
+    pub mod foc_receiver;
 }
 
 use frontend::packet::FHeader;
@@ -45,6 +46,7 @@ use backend::abstract_receiver::AbstractReceiver;
 use backend::gcda_receiver::GcdaReceiver;
 use backend::speedscope_receiver::SpeedscopeReceiver;
 use backend::vpp_receiver::VPPReceiver;
+use backend::foc_receiver::FOCReceiver;
 // error handling
 use anyhow::Result;
 // logging
@@ -92,6 +94,9 @@ struct Args {
     // output the decoded trace in vpp format
     #[arg(long, default_value_t = false)]
     to_vpp: bool,
+    // output the decoded trace in foc format
+    #[arg(long, default_value_t = false)]
+    to_foc: bool,
 }
 
 fn refund_addr(addr: u64) -> u64 {
@@ -205,9 +210,10 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             pc = refund_addr(packet.target_address ^ (pc >> 1));
             timestamp += packet.timestamp;
         } else {
+            trace!("pc before step_bb: {:x}", pc);
             pc = step_bb(pc, &insn_map, &mut bus);
             let insn_to_resolve = insn_map.get(&pc).unwrap();
-            trace!("pc: {:x}", pc);
+            trace!("pc after step_bb: {:x}", pc);
             timestamp += packet.timestamp;
             match packet.f_header {
                 FHeader::FTb => {
@@ -215,24 +221,28 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
                     let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::TakenBranch, timestamp, pc, new_pc));
                     pc = new_pc;
+                    trace!("pc after taken branch: {:x}", pc);
                 }
                 FHeader::FNt => {
                     assert!(BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
                     let new_pc = pc + insn_to_resolve.len() as u64;
                     bus.broadcast(Entry::new_timed_event(Event::NonTakenBranch, timestamp, pc, new_pc));
                     pc = new_pc;
+                    trace!("pc after non-taken branch: {:x}", pc);
                 }
                 FHeader::FIj => {
                     assert!(JUMP_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
                     let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::InferrableJump, timestamp, pc, new_pc));
                     pc = new_pc;
+                    trace!("pc after inferrable jump: {:x}", pc);
                 }
                 FHeader::FUj => {
                     assert!(JUMP_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
                     let new_pc = refund_addr(packet.target_address ^ (pc >> 1));
                     bus.broadcast(Entry::new_timed_event(Event::UninferableJump, timestamp, pc, new_pc));
                     pc = new_pc;
+                    trace!("pc after uninferable jump: {:x}", pc);
                 }
                 FHeader::FTrap => {
                     bus.broadcast(Entry::new_timed_trap(packet.trap_type, packet.timestamp, pc, packet.trap_address));
@@ -294,6 +304,11 @@ fn main() -> Result<()> {
     if args.to_vpp {
         let vpp_bus_endpoint = bus.add_rx();
         receivers.push(Box::new(VPPReceiver::new(vpp_bus_endpoint, args.binary.clone())));
+    }
+
+    if args.to_foc {
+        let foc_bus_endpoint = bus.add_rx();
+        receivers.push(Box::new(FOCReceiver::new(foc_bus_endpoint, args.binary.clone())));
     }
 
     let frontend_handle = thread::spawn(move || trace_decoder(&args, bus));

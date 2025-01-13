@@ -130,6 +130,7 @@ fn read_varint(stream: &mut BufReader<File>) -> Result<u64> {
     let mut result = Vec::new();
     loop {
         let byte = read_u8(stream)?;
+        trace!("byte: {:08b}", byte);
         result.push(byte);
         if byte & VAR_MASK == VAR_LAST { break; }
     }
@@ -161,6 +162,7 @@ pub fn read_packet(stream: &mut BufReader<File>) -> Result<Packet> {
                 }
                 FHeader::FUj => {
                     let target_address = read_varint(stream)?;
+                    trace!("target_addressss: {:x}", target_address);
                     packet.target_address = target_address;
                     let timestamp = read_varint(stream)?;
                     packet.timestamp = timestamp;
