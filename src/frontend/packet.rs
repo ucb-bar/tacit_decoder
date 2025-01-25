@@ -162,7 +162,6 @@ pub fn read_packet(stream: &mut BufReader<File>) -> Result<Packet> {
                 }
                 FHeader::FUj => {
                     let target_address = read_varint(stream)?;
-                    trace!("target_addressss: {:x}", target_address);
                     packet.target_address = target_address;
                     let timestamp = read_varint(stream)?;
                     packet.timestamp = timestamp;

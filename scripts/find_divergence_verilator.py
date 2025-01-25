@@ -1,7 +1,7 @@
 # Parse the verilator trace and the decoder dump to find any divergence
 
 import argparse
-
+import re
 def read_reference_file(reference_file):
     """
     Reads the reference file and returns a list of addresses.
@@ -11,12 +11,22 @@ def read_reference_file(reference_file):
     # print(f"len(reference_addresses): {len(reference_addresses)}")
     return reference_addresses
 
-def find_start_of_trace(reference_addresses):
+def get_start_time(file):
+    with open(file, 'r') as f:
+        # get the first line
+        first_line = f.readline()
+        # [timestamp: 115213] Start
+        pattern = r"\[timestamp: (\d+)\]"
+        # print(f"first_line: {first_line}")
+        timestamp = int(re.search(pattern, first_line).group(1))
+        return timestamp
+
+def find_start_of_trace(reference_addresses, start_time):
     """
-    Finds the line number containing "Writing"
+    Finds the line number containing the start time
     """
     for i, line in enumerate(reference_addresses):
-        if "Writing" in line:
+        if str(start_time) in line:
             return i
     return None
 
@@ -69,7 +79,7 @@ def read_created_file(created_file):
     # print(len(created_data))
     return created_data
 
-def find_most_recent_divergence(reference_addresses, created_data):
+def find_most_recent_divergence(reference_addresses, created_data, start_time):
     """
     Finds the most recent divergence between the reference and created data.
     """
@@ -78,7 +88,8 @@ def find_most_recent_divergence(reference_addresses, created_data):
 
     target_address = created_data[0]
 
-    start_of_trace_index = find_start_of_trace(reference_addresses)
+    start_of_trace_index = find_start_of_trace(reference_addresses, start_time)
+    print(f"start_of_trace_index: {start_of_trace_index}")
     ref_data = parse_verilator_trace(reference_addresses, start_of_trace_index, len(created_data), target_address)
 
     # matching the created data to the reference data
@@ -105,8 +116,8 @@ if __name__ == '__main__':
 
     reference_addresses = read_reference_file(reference_file)
     created_data = read_created_file(decoder_dump)
-
-    match, count = find_most_recent_divergence(reference_addresses, created_data)
+    start_time = get_start_time(decoder_dump)
+    match, count = find_most_recent_divergence(reference_addresses, created_data, start_time)
     if match:
         print(f"[SUCCESS] Everything matched up to the last line: {count}!")
     else:

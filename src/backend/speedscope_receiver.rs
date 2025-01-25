@@ -23,7 +23,6 @@ pub struct ProfileEntry {
 pub struct SpeedscopeReceiver {
     writer: BufWriter<File>,
     receiver: BusReceiver,
-    schema: JSONSchema,
     frames: Vec<Value>, 
     start: u64,
     end: u64,
@@ -39,13 +38,6 @@ impl SpeedscopeReceiver {
         // create the stack unwinder
         let stack_unwinder = StackUnwinder::new(elf_path.clone()).unwrap();
 
-        // Load the schema from the file
-        let schema_file = File::open("src/backend/speedoscope-schema.json").unwrap();
-        let schema_value: Value = serde_json::from_reader(schema_file).unwrap();
-        let schema = JSONSchema::options()
-            .with_draft(Draft::Draft7)
-            .compile(&schema_value)
-            .unwrap();
 
         // for each function symbol, add a frame to the frames vector
         let mut frames = Vec::new();
@@ -60,7 +52,6 @@ impl SpeedscopeReceiver {
                 bus_rx, 
                 checksum: 0 
             },
-            schema,
             frames,
             start: 0,
             end: 0,
@@ -119,6 +110,11 @@ impl AbstractReceiver for SpeedscopeReceiver {
     }
 
     fn _flush(&mut self) {
+        // if there's no end time, set it to the last timestamp
+        if self.end == 0 {
+            self.end = self.profile_entries.last().unwrap().at;
+        }
+        
         // forcefully close all open frames
         let closed_frames = self.stack_unwinder.flush();
         for frame in closed_frames {
@@ -128,6 +124,8 @@ impl AbstractReceiver for SpeedscopeReceiver {
                 at: self.end,
             });
         }
+
+
         
         // Write the JSON structure manually in a deterministic order
         writeln!(self.writer, "{{").unwrap();

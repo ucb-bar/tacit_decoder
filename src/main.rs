@@ -142,18 +142,19 @@ fn step_bb(pc: u64, insn_map: &HashMap<u64, &Insn>, bus: &mut Bus<Entry>) -> u64
 }
 
 fn step_bb_until(pc: u64, insn_map: &HashMap<u64, &Insn>, target_pc: u64, bus: &mut Bus<Entry>) -> u64 {
-    println!("stepping bb from pc: {:x} until pc: {:x}", pc, target_pc);
+    // println!("stepping bb from pc: {:x} until pc: {:x}", pc, target_pc);
     let mut pc = pc;
+
     loop {
         let insn = insn_map.get(&pc).unwrap();
         bus.broadcast(Entry::new_insn(insn));
         if BRANCH_OPCODES.contains(&insn.mnemonic().unwrap()) || JUMP_OPCODES.contains(&insn.mnemonic().unwrap()) {
             break;
         }
-        pc += insn.len() as u64;
         if pc == target_pc {
             break;
         }
+        pc += insn.len() as u64;
     }
     pc
 }
@@ -205,10 +206,14 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             bus.broadcast(Entry::new_timed_event(Event::End, packet.timestamp, pc, 0));
             break;
         } else if packet.f_header == FHeader::FTrap {
-            bus.broadcast(Entry::new_timed_trap(packet.trap_type, packet.timestamp, pc, packet.trap_address));
+            trace!("pc before trap: {:x}", pc);
+            trace!("trap_address: {:x}", packet.trap_address);
             pc = step_bb_until(pc, &insn_map, packet.trap_address, &mut bus);
+            trace!("pc after trap: {:x}", pc);
             pc = refund_addr(packet.target_address ^ (pc >> 1));
+            trace!("pc after refund: {:x}", pc);
             timestamp += packet.timestamp;
+            bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, pc, packet.trap_address));
         } else {
             trace!("pc before step_bb: {:x}", pc);
             pc = step_bb(pc, &insn_map, &mut bus);
@@ -217,7 +222,9 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             timestamp += packet.timestamp;
             match packet.f_header {
                 FHeader::FTb => {
-                    assert!(BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
+                    if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                       panic!("pc: {:x}, insn: {:?}", pc, insn_to_resolve);
+                    }
                     let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::TakenBranch, timestamp, pc, new_pc));
                     pc = new_pc;
@@ -316,10 +323,24 @@ fn main() -> Result<()> {
         .map(|mut receiver| thread::spawn(move || receiver.try_receive_loop()))
         .collect();
 
-    // instead of unwrap, report the error
-    frontend_handle.join().unwrap()?;
-    for handle in receiver_handles {
-        handle.join().unwrap();
+    // Handle frontend thread
+    match frontend_handle.join() {
+        Ok(result) => result?,
+        Err(e) => {
+            // still join the receivers
+            for handle in receiver_handles {
+                handle.join().unwrap();
+            }
+            println!("frontend thread panicked: {:?}", e);
+            return Err(anyhow::anyhow!("Frontend thread panicked: {:?}", e));
+        }
+    }
+
+    // Handle receiver threads
+    for (i, handle) in receiver_handles.into_iter().enumerate() {
+        if let Err(e) = handle.join() {
+            return Err(anyhow::anyhow!("Receiver thread {} panicked: {:?}", i, e));
+        }
     }
 
     Ok(())
