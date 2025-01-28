@@ -144,7 +144,7 @@ impl StackUnwinder {
     
     // return (success, frame_stack_size, symbol_info)
     pub fn step_ij(&mut self, entry: Entry) -> (bool, usize, Option<SymbolInfo>) {
-        assert!(entry.event == Event::InferrableJump);
+        assert!(entry.event == Event::InferrableJump || entry.event == Event::TrapException || entry.event == Event::TrapInterrupt);
         if self.func_symbol_map.contains_key(&entry.arc.1) {
             let frame_idx = self.func_symbol_map[&entry.arc.1].index;
             self.frame_stack.push(frame_idx);
@@ -155,7 +155,7 @@ impl StackUnwinder {
     }
 
     pub fn step_uj(&mut self, entry: Entry) -> (bool, usize, Vec<SymbolInfo>) {
-        assert!(entry.event == Event::UninferableJump);
+        assert!(entry.event == Event::UninferableJump || entry.event == Event::TrapReturn);
         // get the previous instruction - is it a ret or c.jr ra?
         let prev_insn = self.insn_map.get(&entry.arc.0).unwrap();
         let target_frame_addr = entry.arc.1;
