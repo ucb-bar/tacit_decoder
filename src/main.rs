@@ -206,14 +206,10 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             bus.broadcast(Entry::new_timed_event(Event::End, packet.timestamp, pc, 0));
             break;
         } else if packet.f_header == FHeader::FTrap {
-            trace!("pc before trap: {:x}", pc);
-            trace!("trap_address: {:x}", packet.trap_address);
             pc = step_bb_until(pc, &insn_map, packet.trap_address, &mut bus);
-            trace!("pc after trap: {:x}", pc);
             pc = refund_addr(packet.target_address ^ (pc >> 1));
-            trace!("pc after refund: {:x}", pc);
             timestamp += packet.timestamp;
-            bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, pc, packet.trap_address));
+            bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, packet.trap_address, pc));
         } else {
             trace!("pc before step_bb: {:x}", pc);
             pc = step_bb(pc, &insn_map, &mut bus);

@@ -97,7 +97,18 @@ impl StackUnwinder {
         let obj_file = object::File::parse(&*elf_data).unwrap();
         let loader = Loader::new(elf_path.clone()).unwrap();
         let mut next_index = 0;
-        for symbol in obj_file.symbols().filter(|s| s.kind() == object::SymbolKind::Text) {
+        
+        // find the first text symbol and get its section
+        let text_symbol = obj_file.symbols().find(|s| s.kind() == object::SymbolKind::Text).unwrap();
+        let text_section = text_symbol.section();
+        
+        /*
+        we cannot directly use s.kind() == object::SymbolKind::Text because it is not equivalent to section == .text
+        the labels in assembly will be ommitted if we do so;
+        instead, we filter by section == .text and then filter out the symbols that start with $x
+        $x is a dummy symbol marking the march compilation options
+         */
+        for symbol in obj_file.symbols().filter(|s| s.section() == text_section && !s.name().unwrap().starts_with("$x")) {
             let func_addr = symbol.address();
             let loc: SourceLocation = SourceLocation::from_addr2line(loader.find_location(func_addr).unwrap());
             let func_info = SymbolInfo {
@@ -106,7 +117,7 @@ impl StackUnwinder {
                 line: loc.lines,
                 file: String::from(loc.file),
             };
-            trace!("func_info: addr: {:#x}, name: {}, index: {}", func_addr, func_info.name, func_info.index);
+            // debug!("func_info: addr: {:#x}, name: {}, index: {}", func_addr, func_info.name, func_info.index);
             // check if the func_addr is already in the map
             if func_symbol_map.contains_key(&func_addr) {
                 warn!("func_addr: {:#x} already in the map with name: {}", func_addr, func_symbol_map[&func_addr].name);
@@ -116,6 +127,9 @@ impl StackUnwinder {
                 next_index += 1;
             }
         }
+
+        // print the size of the func_symbol_map
+        debug!("func_symbol_map size: {}", func_symbol_map.len());
 
         // sort the func_symbol_map by address
         let mut func_symbol_addr_sorted = func_symbol_map.keys().cloned().collect::<Vec<u64>>();
@@ -150,6 +164,7 @@ impl StackUnwinder {
             self.frame_stack.push(frame_idx);
             return (true, self.frame_stack.len(), Some(self.func_symbol_map[&entry.arc.1].clone()));
         } else {
+            // warn!("step_ij: func_symbol_map does not contain the jump address: {:#x}", entry.arc.1);
             return (false, self.frame_stack.len(), None);
         }
     }
