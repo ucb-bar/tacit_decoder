@@ -2,7 +2,7 @@
 use crate::backend::abstract_receiver::{AbstractReceiver, BusReceiver};
 use bus::BusReader;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::BufWriter;
 use gcno_reader::reader::GCNOReader;
 use gcno_reader::cfg::{ControlFlowGraph, ReportedEdge, SourceLocation};
 use indexmap::IndexMap;
@@ -37,7 +37,7 @@ impl GcdaReceiver {
         let func_name = symbol.name().unwrap();
         let func_addr = symbol.address();
         if let Some((_name, edges)) = edge_map.iter().find(|(_, edges)| edges.iter().any(|e| e.entry && e.func_name == func_name)) {
-          if let Some(edge) = edges.iter().find(|e| e.entry && e.func_name == func_name) {
+          if let Some(_) = edges.iter().find(|e| e.entry && e.func_name == func_name) {
             func_symbol_map.insert(func_addr, (String::from(func_name), 0));
           }
         }

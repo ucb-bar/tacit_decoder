@@ -211,15 +211,15 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             timestamp += packet.timestamp;
             bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, packet.trap_address, pc));
         } else {
-            trace!("pc before step_bb: {:x}", pc);
+            // trace!("pc before step_bb: {:x}", pc);
             pc = step_bb(pc, &insn_map, &mut bus);
             let insn_to_resolve = insn_map.get(&pc).unwrap();
-            trace!("pc after step_bb: {:x}", pc);
+            // trace!("pc after step_bb: {:x}", pc);
             timestamp += packet.timestamp;
             match packet.f_header {
                 FHeader::FTb => {
                     if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
-                       panic!("pc: {:x}, insn: {:?}", pc, insn_to_resolve);
+                       panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
                     }
                     let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::TakenBranch, timestamp, pc, new_pc));

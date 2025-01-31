@@ -6,7 +6,6 @@ use bus::BusReader;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use jsonschema::{JSONSchema, Draft};
 use serde_json::{json, Value};
 use serde::Serialize;
 
@@ -74,7 +73,7 @@ impl AbstractReceiver for SpeedscopeReceiver {
     fn _receive_entry(&mut self, entry: Entry) {
         match entry.event {
             Event::InferrableJump | Event::TrapException | Event::TrapInterrupt => {
-                let (success, frame_stack_size, opened_frame) = self.stack_unwinder.step_ij(entry.clone());
+                let (success, _frame_stack_size, opened_frame) = self.stack_unwinder.step_ij(entry.clone());
                 if success {
                     self.profile_entries.push(ProfileEntry {
                         r#type: "O".to_string(), // opening a frame
@@ -84,7 +83,7 @@ impl AbstractReceiver for SpeedscopeReceiver {
                 }
             }
             Event::UninferableJump | Event::TrapReturn => {
-                let (success, frame_stack_size, closed_frames) = self.stack_unwinder.step_uj(entry.clone());
+                let (success, _frame_stack_size, closed_frames) = self.stack_unwinder.step_uj(entry.clone());
                 if success {
                     for frame in closed_frames {
                         self.profile_entries.push(ProfileEntry {
