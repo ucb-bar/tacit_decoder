@@ -55,7 +55,8 @@ use log::{debug, trace};
 const BRANCH_OPCODES: &[&str] = &["beq", "bge", "bgeu", "blt", "bltu", "bne", "beqz", "bnez",
                                 "bgez", "blez", "bltz", "bgtz", "bgt", "ble", "bgtu", "bleu",
                                 "c.beqz", "c.bnez", "c.bltz", "c.bgez"];
-const JUMP_OPCODES: &[&str] = &["jal", "jalr", "j", "jr", "call", "ret", "tail", "c.j", "c.jal", "c.jr", "c.jalr"];
+const IJ_OPCODES: &[&str] = &["jal", "j", "call", "tail", "c.j", "c.jal"];
+const UJ_OPCODES: &[&str] = &["jalr", "jr", "c.jr", "c.jalr", "ret"];
 const BUS_SIZE: usize = 1024;
 
 #[derive(Clone, Parser)]
@@ -129,7 +130,7 @@ fn step_bb(pc: u64, insn_map: &HashMap<u64, &Insn>, bus: &mut Bus<Entry>) -> u64
     loop {
         let insn = insn_map.get(&pc).unwrap();
         bus.broadcast(Entry::new_insn(insn));
-        if BRANCH_OPCODES.contains(&insn.mnemonic().unwrap()) || JUMP_OPCODES.contains(&insn.mnemonic().unwrap()) {
+        if BRANCH_OPCODES.contains(&insn.mnemonic().unwrap()) || IJ_OPCODES.contains(&insn.mnemonic().unwrap()) || UJ_OPCODES.contains(&insn.mnemonic().unwrap()) {
             break;
         }
         // REMOVE ME: if we encounter something starts with b, j, c.b, or c.j, we should report
@@ -148,7 +149,7 @@ fn step_bb_until(pc: u64, insn_map: &HashMap<u64, &Insn>, target_pc: u64, bus: &
     loop {
         let insn = insn_map.get(&pc).unwrap();
         bus.broadcast(Entry::new_insn(insn));
-        if BRANCH_OPCODES.contains(&insn.mnemonic().unwrap()) || JUMP_OPCODES.contains(&insn.mnemonic().unwrap()) {
+        if BRANCH_OPCODES.contains(&insn.mnemonic().unwrap()) || IJ_OPCODES.contains(&insn.mnemonic().unwrap()) {
             break;
         }
         if pc == target_pc {
@@ -223,29 +224,29 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
                     }
                     let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::TakenBranch, timestamp, pc, new_pc));
+                    trace!("pc before br: {:x}, after taken branch: {:x}", pc, new_pc);
                     pc = new_pc;
-                    trace!("pc after taken branch: {:x}", pc);
                 }
                 FHeader::FNt => {
                     assert!(BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
                     let new_pc = pc + insn_to_resolve.len() as u64;
                     bus.broadcast(Entry::new_timed_event(Event::NonTakenBranch, timestamp, pc, new_pc));
+                    trace!("pc before nt: {:x}, after nt: {:x}", pc, new_pc);
                     pc = new_pc;
-                    trace!("pc after non-taken branch: {:x}", pc);
                 }
                 FHeader::FIj => {
-                    assert!(JUMP_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
+                    assert!(IJ_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
                     let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::InferrableJump, timestamp, pc, new_pc));
+                    trace!("pc before ij: {:x}, after ij: {:x}", pc, new_pc);
                     pc = new_pc;
-                    trace!("pc after inferrable jump: {:x}", pc);
                 }
                 FHeader::FUj => {
-                    assert!(JUMP_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
+                    assert!(UJ_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
                     let new_pc = refund_addr(packet.target_address ^ (pc >> 1));
                     bus.broadcast(Entry::new_timed_event(Event::UninferableJump, timestamp, pc, new_pc));
+                    trace!("pc before uj: {:x}, after uj: {:x}", pc, new_pc);
                     pc = new_pc;
-                    trace!("pc after uninferable jump: {:x}", pc);
                 }
                 FHeader::FTrap => {
                     bus.broadcast(Entry::new_timed_trap(packet.trap_type, packet.timestamp, pc, packet.trap_address));
