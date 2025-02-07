@@ -169,7 +169,7 @@ impl StackUnwinder {
         }
     }
 
-    pub fn step_uj(&mut self, entry: Entry) -> (bool, usize, Vec<SymbolInfo>) {
+    pub fn step_uj(&mut self, entry: Entry) -> (bool, usize, Vec<SymbolInfo>, Option<SymbolInfo>) {
         assert!(entry.event == Event::UninferableJump || entry.event == Event::TrapReturn);
         // get the previous instruction - is it a ret or c.jr ra?
         let prev_insn = self.insn_map.get(&entry.arc.0).unwrap();
@@ -177,7 +177,7 @@ impl StackUnwinder {
         let mut closed_frames = Vec::new();
         // if we come in with an empty stack, we did not close any frames
         if self.frame_stack.is_empty() {
-            return (false, self.frame_stack.len(), closed_frames);
+            return (false, self.frame_stack.len(), closed_frames, None);
         }
         // if we come in with an em
         if prev_insn.mnemonic == "ret" || (prev_insn.mnemonic == "c.jr" && prev_insn.op_str == "ra") {
@@ -187,25 +187,28 @@ impl StackUnwinder {
                     // if this function range is within the target frame range, we can stop
                     let (start, end) = self.idx_2_addr_range[frame_idx];
                     if target_frame_addr >= start && target_frame_addr < end {
-                        return (true, self.frame_stack.len(), closed_frames);
+                        return (true, self.frame_stack.len(), closed_frames, None);
                     }
                     // if not, pop the stack
                     if let Some(frame_idx) = self.frame_stack.pop() {
-                        trace!("closing frame: {}", frame_idx);
                         let func_start_addr = self.idx_2_addr_range[&frame_idx].0;
                         closed_frames.push(self.func_symbol_map[&func_start_addr].clone());
-                    } // if the stack is empty, we are done
-                    else {
-                        return (true, self.frame_stack.len(), closed_frames);
                     }
                 // could have dropped to a frame outside the target range
                 } else {
-                    return (true, self.frame_stack.len(), closed_frames);
+                    // is this a tail call?
+                    if self.func_symbol_map.contains_key(&entry.arc.1) {
+                        // push the new frame
+                        self.frame_stack.push(self.func_symbol_map[&entry.arc.1].index);
+                        return (true, self.frame_stack.len(), closed_frames, Some(self.func_symbol_map[&entry.arc.1].clone()));
+                    } else {
+                        return (true, self.frame_stack.len(), closed_frames, None);
+                    }
                 }
             } 
         } else {
             // not a return
-            return (false, self.frame_stack.len(), closed_frames);
+            return (false, self.frame_stack.len(), closed_frames, None);
         }
     }
 
