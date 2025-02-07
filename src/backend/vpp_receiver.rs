@@ -65,7 +65,7 @@ impl AbstractReceiver for VPPReceiver {
         }
       }
       Event::UninferableJump => {
-        let (success, frame_stack_size, _) = self.stack_unwinder.step_uj(entry.clone());
+        let (success, frame_stack_size, _, _) = self.stack_unwinder.step_uj(entry.clone());
         debug!("frame_stack_size: {}", frame_stack_size);
         if success && (frame_stack_size == 0) {
           debug!("frame_stack_size is {}", frame_stack_size);

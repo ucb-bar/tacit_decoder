@@ -9,7 +9,7 @@ use std::io::{BufWriter, Write};
 use serde_json::{json, Value};
 use serde::Serialize;
 
-use log::debug;
+use log::{debug, warn};
 
 
 #[derive(Serialize)]
@@ -83,7 +83,7 @@ impl AbstractReceiver for SpeedscopeReceiver {
                 }
             }
             Event::UninferableJump | Event::TrapReturn => {
-                let (success, _frame_stack_size, closed_frames) = self.stack_unwinder.step_uj(entry.clone());
+                let (success, _frame_stack_size, closed_frames, opened_frame) = self.stack_unwinder.step_uj(entry.clone());
                 if success {
                     for frame in closed_frames {
                         self.profile_entries.push(ProfileEntry {
@@ -92,6 +92,14 @@ impl AbstractReceiver for SpeedscopeReceiver {
                             at: entry.timestamp.unwrap(),
                         });
                     }
+                }
+                if let Some(opened_frame) = opened_frame {
+                    warn!("tail call detected");
+                    self.profile_entries.push(ProfileEntry {
+                        r#type: "O".to_string(), // opening a frame
+                        frame: opened_frame.index,
+                        at: entry.timestamp.unwrap(),
+                    });
                 }
             }
             Event::Start => {
