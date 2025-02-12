@@ -202,6 +202,8 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
     let mut encoded_trace_reader : BufReader<File> = BufReader::new(encoded_trace_file);
 
     let mut bp_counter = BpDoubleSaturatingCounter::new(1024);
+    let mut hit_count = 0;
+    let mut miss_count = 0;
 
     let (packet, br_mode) = frontend::packet::read_first_packet(&mut encoded_trace_reader)?;
     let mut packet_count = 0;
@@ -218,6 +220,10 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
         if packet.f_header == FHeader::FSync {
             pc = step_bb_until(pc, &insn_map, refund_addr(packet.target_address), &mut bus);
             println!("detected FSync packet, trace ending!");
+            if br_mode == BrMode::BrPredict {
+                println!("hit count: {}, miss count: {}, hit rate: {}", 
+                        hit_count, miss_count, hit_count as f64 / (hit_count + miss_count) as f64);
+            }
             bus.broadcast(Entry::new_timed_event(Event::End, packet.timestamp, pc, 0));
             break;
         } else if packet.f_header == FHeader::FTrap {
@@ -227,6 +233,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, packet.trap_address, pc));
         } else if br_mode == BrMode::BrPredict && packet.f_header == FHeader::FTb { // predicted hit
             bus.broadcast(Entry::new_timed_event(Event::BPHit, timestamp, pc, pc));
+            hit_count += packet.timestamp;
             // predict for timestamp times
             for _ in 0..packet.timestamp {
                 pc = step_bb(pc, &insn_map, &mut bus);
@@ -247,6 +254,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             }
         } else if br_mode == BrMode::BrPredict && packet.f_header == FHeader::FNt { // predicted miss
             bus.broadcast(Entry::new_timed_event(Event::BPMiss, timestamp, pc, pc));
+            miss_count += 1;
             pc = step_bb(pc, &insn_map, &mut bus);
             let insn_to_resolve = insn_map.get(&pc).unwrap();
             if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
