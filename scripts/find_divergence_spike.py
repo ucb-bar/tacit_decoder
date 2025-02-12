@@ -7,7 +7,7 @@ def read_reference_file(reference_file):
     Reads the reference file and returns a list of addresses.
     """
     with open(reference_file, 'r') as f:
-        reference_addresses = [line.strip() for line in f.readlines()]
+        reference_addresses = [line.strip().split(',')[0] for line in f.readlines()]
     return reference_addresses
 
 def read_created_file(created_file):
@@ -17,7 +17,7 @@ def read_created_file(created_file):
     created_data = {}
     with open(created_file, 'r') as f:
         for line in f:
-            if ':' in line:
+            if ':' in line and 'timestamp' not in line:
                 address, instruction = line.split(':', 1)
                 created_data[address.strip()] = instruction.strip()
     return created_data
@@ -26,10 +26,18 @@ def find_most_recent_divergence(reference_addresses, created_data):
     """
     Finds the most recent divergence between the reference and created data.
     """
+    # first, get the first line of the created file
+    first_line_address = list(created_data.keys())[0]
+    # get the first occurrence of the first line address in the reference file
+    first_line_index = reference_addresses.index(first_line_address.split('0x')[1])
+    
+    print(f"First line index: {first_line_index}")
+
     count = 0
     last_matching_address = None
+    # start from first_line_index and go through the reference file
     
-    for address in reference_addresses:
+    for address in reference_addresses[first_line_index:]:
         # Convert address to the format used in the created file
         formatted_address = '0x' + address.lower()
 

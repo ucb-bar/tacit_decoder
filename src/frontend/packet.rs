@@ -2,97 +2,11 @@ use std::fs::File;
 use std::io::{Read, BufReader};
 use anyhow::Result;
 use log::trace;
-const C_HEADER_MASK: u8 = 0b0000_0011;
-const C_TIMESTAMP_MASK: u8 = 0b1111_1100;
-const F_HEADER_MASK: u8 = 0b0001_1100;
-const FHEADER_OFFSET: u8 = 2;
-const TRAP_TYPE_MASK: u8 = 0b1110_0000;
-const TRAP_TYPE_OFFSET: u8 = 5;
 
-const VAR_MASK: u8 = 0b1000_0000;
-// const VAR_CONT: u8 = 0b0000_0000;
-const VAR_LAST: u8 = 0b1000_0000;
-const VAR_OFFSET: u8 = 7;
-const VAR_VAL_MASK: u8 = 0b0111_1111;
-
-#[derive(Debug, Clone)]
-pub enum CHeader {
-    CTb = 0b00, // taken branch
-    CNt = 0b01, // not taken branch
-    CNa = 0b10, // not applicable
-    CIj = 0b11, // inferable jump
-}
-
-impl From<u8> for CHeader {
-    fn from(value: u8) -> Self {
-        match value {
-            0b00 => CHeader::CTb,
-            0b01 => CHeader::CNt,
-            0b10 => CHeader::CNa,
-            0b11 => CHeader::CIj,
-            _ => panic!("Invalid CHeader value"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FHeader {
-    FTb = 0b000,   // taken branch
-    FNt = 0b001,   // non taken branch
-    FUj = 0b010,   // uninferable jump
-    FIj = 0b011,   // inferable jump
-    FTrap = 0b100, // trapping happened - could be interrupt or exception
-    FSync = 0b101, // a synchronization packet
-    FVal = 0b110,   // this packets report a certain value upon request
-    FRes = 0b111,   // reserved for now
-}
-
-impl From<u8> for FHeader {
-    fn from(value: u8) -> Self {
-        match value {
-            0b000 => FHeader::FTb,
-            0b001 => FHeader::FNt,
-            0b010 => FHeader::FUj,
-            0b011 => FHeader::FIj,
-            0b100 => FHeader::FTrap,
-            0b101 => FHeader::FSync,
-            0b110 => FHeader::FVal,
-            0b111 => FHeader::FRes,
-            _ => panic!("Invalid FHeader value"),
-        }
-    }
-}
-
-impl From<CHeader> for FHeader {
-    fn from(c_header: CHeader) -> Self {
-        match c_header {
-            CHeader::CTb  => FHeader::FTb,
-            CHeader::CNt  => FHeader::FNt,
-            CHeader::CIj  => FHeader::FIj,
-            CHeader::CNa => panic!("CNa should not be converted to FHeader"),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum TrapType {
-    TNone      = 0b000,
-    TException = 0b001,
-    TInterrupt = 0b010,
-    TReturn    = 0b100,
-}
-
-impl From<u8> for TrapType {
-    fn from(value: u8) -> Self {
-        match value {
-            0b000 => TrapType::TNone,
-            0b001 => TrapType::TException,
-            0b010 => TrapType::TInterrupt,
-            0b100 => TrapType::TReturn,
-            _ => panic!("Invalid TrapType value"),
-        }
-    }
-}
+use crate::frontend::c_header::*;
+use crate::frontend::f_header::*;
+use crate::frontend::trap_type::*;
+use crate::frontend::br_mode::*;
 
 #[derive(Debug)]
 pub struct Packet {
@@ -125,6 +39,11 @@ fn read_u8(stream: &mut BufReader<File>) -> Result<u8> {
     stream.read_exact(&mut buf)?;
     Ok(buf[0])
 }
+
+const VAR_MASK: u8 = 0b1000_0000;
+const VAR_LAST: u8 = 0b1000_0000;
+const VAR_OFFSET: u8 = 7;
+const VAR_VAL_MASK: u8 = 0b0111_1111;
 
 fn read_varint(stream: &mut BufReader<File>) -> Result<u64> {
     let mut result = Vec::new();
@@ -169,6 +88,7 @@ pub fn read_packet(stream: &mut BufReader<File>) -> Result<Packet> {
                     packet.c_header = CHeader::CNa;
                 }
                 FHeader::FSync => {
+                    let _ = read_varint(stream)?; // branch mode, unused in sync end packets
                     let target_address = read_varint(stream)?;
                     packet.target_address = target_address;
                     let timestamp = read_varint(stream)?;
@@ -195,4 +115,20 @@ pub fn read_packet(stream: &mut BufReader<File>) -> Result<Packet> {
         }
     }
     Ok(packet)
+}
+
+pub fn read_first_packet(stream: &mut BufReader<File>) -> Result<(Packet, BrMode)> {
+    let mut packet = Packet::new();
+    let first_byte = read_u8(stream)?;
+    trace!("first_byte: {:08b}", first_byte);
+    let c_header = CHeader::from(first_byte & C_HEADER_MASK);
+    assert!(c_header == CHeader::CNa);
+    let f_header = FHeader::from((first_byte & F_HEADER_MASK) >> FHEADER_OFFSET);
+    assert!(f_header == FHeader::FSync);
+    let br_mode = BrMode::from(read_varint(stream)?);
+    let target_address = read_varint(stream)?;
+    packet.target_address = target_address;
+    let timestamp = read_varint(stream)?;
+    packet.timestamp = timestamp;
+    Ok((packet, br_mode))
 }

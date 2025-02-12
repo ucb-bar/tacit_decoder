@@ -1,5 +1,5 @@
 use capstone::Insn;
-use crate::frontend::packet::TrapType;
+use crate::frontend::trap_type::TrapType;
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -14,6 +14,8 @@ pub enum Event {
     TrapException,
     TrapInterrupt,
     TrapReturn,
+    BPHit,
+    BPMiss,
 }
 
 impl Event {
@@ -38,6 +40,8 @@ impl Event {
             Event::TrapException => "TrapException".to_string(),
             Event::TrapInterrupt => "TrapInterrupt".to_string(),
             Event::TrapReturn => "TrapReturn".to_string(),
+            Event::BPHit => "BPHit".to_string(),
+            Event::BPMiss => "BPMiss".to_string(),
         }
     }
 }

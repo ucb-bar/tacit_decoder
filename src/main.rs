@@ -7,6 +7,11 @@ extern crate env_logger;
 extern crate gcno_reader;
 mod frontend {
     pub mod packet;
+    pub mod br_mode;
+    pub mod c_header;
+    pub mod f_header;
+    pub mod trap_type;
+    pub mod bp_double_saturating_counter;
 }
 mod backend {
     pub mod abstract_receiver;
@@ -21,7 +26,7 @@ mod backend {
     pub mod foc_receiver;
 }
 
-use frontend::packet::FHeader;
+use frontend::f_header::FHeader;
 
 // file IO
 use std::fs::File;
@@ -38,6 +43,10 @@ use object::{Object, ObjectSection};
 // bus dependency
 use bus::Bus;
 use std::thread;
+// frontend dependency
+use frontend::bp_double_saturating_counter::BpDoubleSaturatingCounter;
+use frontend::br_mode::BrMode;
+// backend dependency
 use backend::event::{Entry, Event};
 use backend::txt_receiver::TxtReceiver;
 use backend::json_receiver::JsonReceiver;
@@ -192,15 +201,20 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
     let encoded_trace_file = File::open(args.encoded_trace.clone())?;
     let mut encoded_trace_reader : BufReader<File> = BufReader::new(encoded_trace_file);
 
-    let packet = frontend::packet::read_packet(&mut encoded_trace_reader)?;
+    let mut bp_counter = BpDoubleSaturatingCounter::new(1024);
+
+    let (packet, br_mode) = frontend::packet::read_first_packet(&mut encoded_trace_reader)?;
+    let mut packet_count = 0;
+
     trace!("packet: {:?}", packet);
     let mut pc = refund_addr(packet.target_address);
     let mut timestamp = packet.timestamp;
     bus.broadcast(Entry::new_timed_event(Event::Start, packet.timestamp, pc, 0));
 
     while let Ok(packet) = frontend::packet::read_packet(&mut encoded_trace_reader) {
+        packet_count += 1;
         // special handling for the last packet, should be unlikely hinted
-        trace!("packet: {:?}", packet);
+        trace!("[{}]: packet: {:?}", packet_count, packet);
         if packet.f_header == FHeader::FSync {
             pc = step_bb_until(pc, &insn_map, refund_addr(packet.target_address), &mut bus);
             println!("detected FSync packet, trace ending!");
@@ -211,7 +225,44 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             pc = refund_addr(packet.target_address ^ (pc >> 1));
             timestamp += packet.timestamp;
             bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, packet.trap_address, pc));
-        } else {
+        } else if br_mode == BrMode::BrPredict && packet.f_header == FHeader::FTb { // predicted hit
+            bus.broadcast(Entry::new_timed_event(Event::BPHit, timestamp, pc, pc));
+            // predict for timestamp times
+            for _ in 0..packet.timestamp {
+                pc = step_bb(pc, &insn_map, &mut bus);
+                let insn_to_resolve = insn_map.get(&pc).unwrap();
+                if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                    panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
+                 }
+                let taken = bp_counter.predict(pc, true);
+                if taken {
+                    let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
+                    bus.broadcast(Entry::new_timed_event(Event::TakenBranch, timestamp, pc, new_pc));
+                    pc = new_pc;
+                } else {
+                    let new_pc = pc + insn_to_resolve.len() as u64;
+                    bus.broadcast(Entry::new_timed_event(Event::NonTakenBranch, timestamp, pc, new_pc));
+                    pc = new_pc;
+                }
+            }
+        } else if br_mode == BrMode::BrPredict && packet.f_header == FHeader::FNt { // predicted miss
+            bus.broadcast(Entry::new_timed_event(Event::BPMiss, timestamp, pc, pc));
+            pc = step_bb(pc, &insn_map, &mut bus);
+            let insn_to_resolve = insn_map.get(&pc).unwrap();
+            if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
+             }
+            let taken = bp_counter.predict(pc, false);
+            if !taken { // reverse as we mispredicted
+                let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
+                bus.broadcast(Entry::new_timed_event(Event::TakenBranch, timestamp, pc, new_pc));
+                pc = new_pc;
+            } else {
+                let new_pc = pc + insn_to_resolve.len() as u64;
+                bus.broadcast(Entry::new_timed_event(Event::NonTakenBranch, timestamp, pc, new_pc));
+                pc = new_pc;
+            }
+        } else  {
             // trace!("pc before step_bb: {:x}", pc);
             pc = step_bb(pc, &insn_map, &mut bus);
             let insn_to_resolve = insn_map.get(&pc).unwrap();
@@ -247,10 +298,6 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
                     bus.broadcast(Entry::new_timed_event(Event::UninferableJump, timestamp, pc, new_pc));
                     trace!("pc before uj: {:x}, after uj: {:x}", pc, new_pc);
                     pc = new_pc;
-                }
-                FHeader::FTrap => {
-                    bus.broadcast(Entry::new_timed_trap(packet.trap_type, packet.timestamp, pc, packet.trap_address));
-                    pc = refund_addr(packet.target_address ^ (pc >> 1));
                 }
                 _ => {
                     panic!("unknown FHeader: {:?}", packet.f_header);
