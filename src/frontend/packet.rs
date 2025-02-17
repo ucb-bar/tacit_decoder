@@ -117,7 +117,7 @@ pub fn read_packet(stream: &mut BufReader<File>) -> Result<Packet> {
     Ok(packet)
 }
 
-pub fn read_first_packet(stream: &mut BufReader<File>) -> Result<(Packet, BrMode)> {
+pub fn read_first_packet(stream: &mut BufReader<File>) -> Result<Packet> {
     let mut packet = Packet::new();
     let first_byte = read_u8(stream)?;
     trace!("first_byte: {:08b}", first_byte);
@@ -125,10 +125,9 @@ pub fn read_first_packet(stream: &mut BufReader<File>) -> Result<(Packet, BrMode
     assert!(c_header == CHeader::CNa);
     let f_header = FHeader::from((first_byte & F_HEADER_MASK) >> FHEADER_OFFSET);
     assert!(f_header == FHeader::FSync);
-    let br_mode = BrMode::from(read_varint(stream)?);
     let target_address = read_varint(stream)?;
     packet.target_address = target_address;
     let timestamp = read_varint(stream)?;
     packet.timestamp = timestamp;
-    Ok((packet, br_mode))
+    Ok(packet)
 }

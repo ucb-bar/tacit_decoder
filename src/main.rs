@@ -80,6 +80,12 @@ struct Args {
     // path to the decoded trace file
     #[arg(short, long, default_value_t = String::from("trace.dump"))]
     decoded_trace: String,
+    // branch mode
+    #[arg(long, default_value_t = 0)]
+    br_mode: u64,
+    // branch prediction number of entries
+    #[arg(long, default_value_t = 1024)]
+    bp_entries: u64,
     // print the timestamp in the decoded trace file
     #[arg(short, long, default_value_t = false)]
     timestamp: bool,
@@ -201,11 +207,13 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
     let encoded_trace_file = File::open(args.encoded_trace.clone())?;
     let mut encoded_trace_reader : BufReader<File> = BufReader::new(encoded_trace_file);
 
-    let mut bp_counter = BpDoubleSaturatingCounter::new(1024);
+    let mut bp_counter = BpDoubleSaturatingCounter::new(args.bp_entries);
     let mut hit_count = 0;
     let mut miss_count = 0;
 
-    let (packet, br_mode) = frontend::packet::read_first_packet(&mut encoded_trace_reader)?;
+    let br_mode = BrMode::from(args.br_mode);
+
+    let packet = frontend::packet::read_first_packet(&mut encoded_trace_reader)?;
     let mut packet_count = 0;
 
     trace!("packet: {:?}", packet);
@@ -232,7 +240,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             timestamp += packet.timestamp;
             bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, packet.trap_address, pc));
         } else if br_mode == BrMode::BrPredict && packet.f_header == FHeader::FTb { // predicted hit
-            bus.broadcast(Entry::new_timed_event(Event::BPHit, timestamp, pc, pc));
+            bus.broadcast(Entry::new_timed_event(Event::BPHit, packet.timestamp, pc, pc));
             hit_count += packet.timestamp;
             // predict for timestamp times
             for _ in 0..packet.timestamp {
@@ -316,7 +324,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
     }
 
     drop(bus);
-    println!("[fe-decoder] bus dropped");
+    println!("[Success] Decoded {} packets", packet_count);
 
     Ok(())
 }
