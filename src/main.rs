@@ -261,6 +261,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
                 }
             }
         } else if br_mode == BrMode::BrPredict && packet.f_header == FHeader::FNt { // predicted miss
+            timestamp += packet.timestamp;
             bus.broadcast(Entry::new_timed_event(Event::BPMiss, timestamp, pc, pc));
             miss_count += 1;
             pc = step_bb(pc, &insn_map, &mut bus);

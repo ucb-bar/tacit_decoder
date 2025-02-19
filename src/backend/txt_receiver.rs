@@ -39,6 +39,10 @@ impl AbstractReceiver for TxtReceiver {
                 }
                 self.writer.write_all(b"\n").unwrap();
             }
+            Event::BPHit => {
+                self.writer.write_all(format!("[hit count: {}]", entry.timestamp.unwrap()).as_bytes()).unwrap();
+                self.writer.write_all(b" BPHit\n").unwrap();
+            }
             _ => {
                 if let Some(timestamp) = entry.timestamp {
                     self.writer.write_all(format!("[timestamp: {}]", timestamp).as_bytes()).unwrap();
