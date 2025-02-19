@@ -73,7 +73,7 @@ def read_created_file(created_file):
     created_data = []
     with open(created_file, 'r') as f:
         for line in f:
-            if ':' in line and 'timestamp' not in line:
+            if ':' in line and 'timestamp' not in line and "hit count" not in line:
                 address, instruction = line.split(':', 1)
                 created_data.append(address.strip().split('0x')[1])
     # print(len(created_data))
