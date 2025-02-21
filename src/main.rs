@@ -121,11 +121,11 @@ fn refund_addr(addr: u64) -> u64 {
 
 // FIXME: hacky way to get the offset operand, always the last one
 fn compute_offset(insn: &Insn) -> i64 {
-    trace!("insn: {:?}", insn);
+    // trace!("insn: {:?}", insn);
     let offset = insn.op_str().unwrap().split(",").last().unwrap();
     // remove leading spaces
     let offset = offset.trim();
-    trace!("offset: {:?}", offset);
+    // trace!("offset: {:?}", offset);
     let offset_value: i64;
     if offset.starts_with("-0x") {
         offset_value = i64::from_str_radix(&offset[3..], 16).unwrap() * -1;
@@ -150,6 +150,7 @@ fn step_bb(pc: u64, insn_map: &HashMap<u64, &Insn>, bus: &mut Bus<Entry>) -> u64
         }
         // REMOVE ME: if we encounter something starts with b, j, c.b, or c.j, we should report
         if insn.mnemonic().unwrap().starts_with("b") || insn.mnemonic().unwrap().starts_with("j") || insn.mnemonic().unwrap().starts_with("c.b") || insn.mnemonic().unwrap().starts_with("c.j") {
+            bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
             panic!("UNHANDLED: pc: {:x}, insn: {}", pc, insn.mnemonic().unwrap());
         }
         pc += insn.len() as u64;
@@ -247,6 +248,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
                 pc = step_bb(pc, &insn_map, &mut bus);
                 let insn_to_resolve = insn_map.get(&pc).unwrap();
                 if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                    bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
                     panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
                  }
                 let taken = bp_counter.predict(pc, true);
@@ -267,6 +269,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             pc = step_bb(pc, &insn_map, &mut bus);
             let insn_to_resolve = insn_map.get(&pc).unwrap();
             if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
                 panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
              }
             let taken = bp_counter.predict(pc, false);
@@ -288,6 +291,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             match packet.f_header {
                 FHeader::FTb => {
                     if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                       bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
                        panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
                     }
                     let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
@@ -296,27 +300,37 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
                     pc = new_pc;
                 }
                 FHeader::FNt => {
-                    assert!(BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
+                    if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                        bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
+                        panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
+                    }
                     let new_pc = pc + insn_to_resolve.len() as u64;
                     bus.broadcast(Entry::new_timed_event(Event::NonTakenBranch, timestamp, pc, new_pc));
                     trace!("pc before nt: {:x}, after nt: {:x}", pc, new_pc);
                     pc = new_pc;
                 }
                 FHeader::FIj => {
-                    assert!(IJ_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
+                    if !IJ_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                        bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
+                        panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
+                    }
                     let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::InferrableJump, timestamp, pc, new_pc));
                     trace!("pc before ij: {:x}, after ij: {:x}", pc, new_pc);
                     pc = new_pc;
                 }
                 FHeader::FUj => {
-                    assert!(UJ_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()));
+                    if !UJ_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                        bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
+                        panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
+                    }
                     let new_pc = refund_addr(packet.target_address ^ (pc >> 1));
                     bus.broadcast(Entry::new_timed_event(Event::UninferableJump, timestamp, pc, new_pc));
                     trace!("pc before uj: {:x}, after uj: {:x}", pc, new_pc);
                     pc = new_pc;
                 }
                 _ => {
+                    bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
                     panic!("unknown FHeader: {:?}", packet.f_header);
                 }
             }

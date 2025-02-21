@@ -16,6 +16,7 @@ pub enum Event {
     TrapReturn,
     BPHit,
     BPMiss,
+    Panic
 }
 
 impl Event {
@@ -42,6 +43,7 @@ impl Event {
             Event::TrapReturn => "TrapReturn".to_string(),
             Event::BPHit => "BPHit".to_string(),
             Event::BPMiss => "BPMiss".to_string(),
+            Event::Panic => "Panic".to_string(),
         }
     }
 }
