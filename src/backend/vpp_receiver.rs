@@ -20,7 +20,7 @@ pub struct VPPReceiver {
   stack_unwinder: StackUnwinder,
   // path -> time intervals
   path_records: HashMap<Path, Vec<u64>>,
-  curr_path: Option<Path>,
+  curr_paths: Vec<Path>,
   start_timestamp: u64,
 }
 
@@ -36,7 +36,7 @@ impl VPPReceiver {
       },
       stack_unwinder: StackUnwinder::new(elf_path).unwrap(),
       path_records: HashMap::new(),
-      curr_path: None,
+      curr_paths: Vec::new(),
       start_timestamp: 0,
     }
   }
@@ -55,9 +55,9 @@ impl AbstractReceiver for VPPReceiver {
     match entry.event {
       Event::InferrableJump => {
         let (success, frame_stack_size, _) = self.stack_unwinder.step_ij(entry.clone());
-        if success && frame_stack_size == 1 {
+        if success {
           debug!("Starting new path on address {:#x}", entry.arc.1);
-          self.curr_path = Some(Path {
+          self.curr_paths.push(Path {
             addr: entry.arc.1,
             path: Vec::new(),
           });
@@ -67,35 +67,30 @@ impl AbstractReceiver for VPPReceiver {
       Event::UninferableJump => {
         let (success, frame_stack_size, _, _) = self.stack_unwinder.step_uj(entry.clone());
         debug!("frame_stack_size: {}", frame_stack_size);
-        if success && (frame_stack_size == 0) {
-          debug!("frame_stack_size is {}", frame_stack_size);
-          if let Some(curr_path) = self.curr_path.as_ref() {
+        // at least one path is closed
+        if success {
+          // we should close paths until frame_stack_size match
+          while self.curr_paths.len() > frame_stack_size {
+            let curr_path = self.curr_paths.pop().unwrap();
             debug!("Closing path on current path {:#x}", curr_path.addr);
-          } else {
-            debug!("No current path");
+            // if curr_path is contained in path_records, add the time interval to the record
+            if let Some(path_record) = self.path_records.get_mut(&curr_path) {
+              path_record.push(entry.timestamp.unwrap() - self.start_timestamp);
+            }
+            // otherwise, create a new record
+            else {
+              self.path_records.insert(curr_path.clone(), vec![entry.timestamp.unwrap() - self.start_timestamp]);
+            }
           }
-          debug!("Hello");
-          let curr_path_ref = self.curr_path.as_ref();
-          let curr_path_unwraped = curr_path_ref.unwrap();
-          debug!("Closing path on current path {:#x}", curr_path_unwraped.addr);
-          // if curr_path is contained in path_records, add the time interval to the record
-          if let Some(path_record) = self.path_records.get_mut(&self.curr_path.as_ref().unwrap()) {
-            path_record.push(entry.timestamp.unwrap() - self.start_timestamp);
-          }
-          // otherwise, create a new record
-          else {
-            self.path_records.insert(self.curr_path.as_ref().unwrap().clone(), vec![entry.timestamp.unwrap() - self.start_timestamp]);
-          }
-          self.curr_path = None;
         }
       }
       Event::TakenBranch => {
-        if let Some(curr_path) = self.curr_path.as_mut() {
+        if let Some(curr_path) = self.curr_paths.last_mut() {
           curr_path.path.push(true);
         }
       }
       Event::NonTakenBranch => {
-        if let Some(curr_path) = self.curr_path.as_mut() {
+        if let Some(curr_path) = self.curr_paths.last_mut() {
           curr_path.path.push(false);
         }
       }
