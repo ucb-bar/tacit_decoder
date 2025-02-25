@@ -385,7 +385,7 @@ fn main() -> Result<()> {
 
     if args.to_vpp {
         let vpp_bus_endpoint = bus.add_rx();
-        receivers.push(Box::new(VPPReceiver::new(vpp_bus_endpoint, args.binary.clone())));
+        receivers.push(Box::new(VPPReceiver::new(vpp_bus_endpoint, args.binary.clone(), args.br_mode == 0)));
     }
 
     if args.to_foc {
