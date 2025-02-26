@@ -6,7 +6,6 @@ use log::trace;
 use crate::frontend::c_header::*;
 use crate::frontend::f_header::*;
 use crate::frontend::trap_type::*;
-use crate::frontend::br_mode::*;
 
 #[derive(Debug)]
 pub struct Packet {

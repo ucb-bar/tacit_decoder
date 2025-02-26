@@ -6,7 +6,6 @@ use bus::BusReader;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::collections::HashMap;
-use log::debug;
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct Path {
@@ -59,7 +58,7 @@ impl AbstractReceiver for VPPReceiver {
   fn _receive_entry(&mut self, entry: Entry) {
     match entry.event {
       Event::InferrableJump => {
-        let (success, frame_stack_size, _) = self.stack_unwinder.step_ij(entry.clone());
+        let (success, _ , _) = self.stack_unwinder.step_ij(entry.clone());
         if success {
           // debug!("Starting new path on address {:#x}", entry.arc.1);
           self.curr_paths.push(Path {

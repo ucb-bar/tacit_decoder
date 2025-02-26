@@ -5,7 +5,6 @@ use bus::BusReader;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::collections::HashMap;
-use log::debug;
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct BB {
