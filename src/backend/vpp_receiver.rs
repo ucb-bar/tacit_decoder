@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use log::debug;
 
 #[derive(Hash, PartialEq, Eq, Clone)]
-pub struct Path{
+pub struct Path {
   addr: u64,
   path: Vec<bool>,
 }

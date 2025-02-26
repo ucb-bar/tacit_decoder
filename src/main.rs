@@ -24,6 +24,7 @@ mod backend {
     pub mod speedscope_receiver;
     pub mod vpp_receiver;
     pub mod foc_receiver;
+    pub mod vbb_receiver;
 }
 
 use frontend::f_header::FHeader;
@@ -56,6 +57,7 @@ use backend::gcda_receiver::GcdaReceiver;
 use backend::speedscope_receiver::SpeedscopeReceiver;
 use backend::vpp_receiver::VPPReceiver;
 use backend::foc_receiver::FOCReceiver;
+use backend::vbb_receiver::VBBReceiver;
 // error handling
 use anyhow::Result;
 // logging
@@ -113,6 +115,9 @@ struct Args {
     // output the decoded trace in foc format
     #[arg(long, default_value_t = false)]
     to_foc: bool,
+    // output the decoded trace in vbb format
+    #[arg(long, default_value_t = false)]
+    to_vbb: bool,
 }
 
 fn refund_addr(addr: u64) -> u64 {
@@ -391,6 +396,11 @@ fn main() -> Result<()> {
     if args.to_foc {
         let foc_bus_endpoint = bus.add_rx();
         receivers.push(Box::new(FOCReceiver::new(foc_bus_endpoint, args.binary.clone())));
+    }
+
+    if args.to_vbb {
+        let vbb_bus_endpoint = bus.add_rx();
+        receivers.push(Box::new(VBBReceiver::new(vbb_bus_endpoint)));
     }
 
     let frontend_handle = thread::spawn(move || trace_decoder(&args, bus));
