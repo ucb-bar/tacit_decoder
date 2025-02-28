@@ -40,7 +40,8 @@ use clap::Parser;
 use capstone::prelude::*;
 use capstone::arch::riscv::{ArchMode, ArchExtraMode};
 use capstone::Insn;
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, SectionFlags};
+use object::elf::SHF_EXECINSTR;
 // bus dependency
 use bus::Bus;
 use std::thread;
@@ -188,6 +189,20 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
     elf_file.read_to_end(&mut elf_buffer)?;
     let elf = object::File::parse(&*elf_buffer)?;
     assert!(elf.architecture() == object::Architecture::Riscv64);
+
+    // Iterate over all sections and print their names and flags
+    println!("Executable ELF sections:");
+    for section in elf.sections() {
+        let name = section.name().unwrap_or("<unnamed>");
+        let flags = section.flags();
+
+        match flags {
+            object::SectionFlags::Elf { sh_flags } if sh_flags & (SHF_EXECINSTR as u64) != 0 => {
+                println!("  Executable Section: {} | Flags: {:#x}", name, sh_flags);
+            }
+            _ => continue, // Skip non-executable sections
+        }
+    }
 
     // Try to find the .text section first (bare-metal)
     let (text_section, entry_point) = if let Some(section) = elf.section_by_name(".text") {
