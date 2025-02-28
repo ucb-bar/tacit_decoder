@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use capstone::prelude::*;
 use capstone::arch::riscv::{ArchMode, ArchExtraMode};
 use capstone::Insn;
-use object::{Object, ObjectSection, ObjectSymbol};
+use object::{Object, ObjectSection, ObjectSymbol, SectionFlags};
+use object::elf::SHF_EXECINSTR;
 
 use std::fs::File;
 use std::io::Read;
@@ -60,6 +61,54 @@ pub struct StackUnwinder {
     frame_stack: Vec<u32>, // Queue of index
 }
 
+pub fn decode_elf_instructions<'a>(
+    elf: &'a object::File,
+    cs: &'a Capstone,
+) -> Result<Vec<capstone::Instructions<'a>>> {
+    let mut all_decoded_insns = Vec::new();
+    println!("Processing executable ELF sections:");
+    for section in elf.sections() {
+        let name = section.name().unwrap_or("<unnamed>");
+        let flags = section.flags();
+
+        if let object::SectionFlags::Elf { sh_flags } = flags {
+            if sh_flags & (SHF_EXECINSTR as u64) != 0 {
+                let entry_point = section.address();
+                // `section.data()` returns a slice that borrows from the ELF’s underlying buffer.
+                let text_data = section.data()?;
+                
+                println!("  Executable Section: {} at {:#x}", name, entry_point);
+                // disassemble using the provided Capstone reference;
+                // note that the returned Instructions borrow from `text_data`
+                let decoded_instructions = cs.disasm_all(&text_data, entry_point)?;
+                debug!("[main] {}: found {} instructions", name, decoded_instructions.len());
+
+                // Save the decoded instructions for later use.
+                all_decoded_insns.push(decoded_instructions);
+            }
+        }
+    }
+
+    if all_decoded_insns.is_empty() {
+        return Err(anyhow::anyhow!("No executable instructions found in ELF file"));
+    }
+    Ok(all_decoded_insns)
+}
+
+/// Given a slice of decoded instruction groups, build a map from instruction address
+/// to a reference to the instruction. The returned map borrows from `decoded_insns`.
+pub fn build_insn_map<'a>(
+    decoded_insns: &'a [capstone::Instructions<'a>],
+) -> HashMap<u64, &'a capstone::Insn<'a>> {
+    let mut insn_map = HashMap::new();
+    for group in decoded_insns {
+        for insn in group.iter() {
+            insn_map.insert(insn.address(), insn);
+        }
+    }
+    insn_map
+}
+
 impl StackUnwinder {
     pub fn new(elf_path: String) -> Result<Self> {
         // Open and read the ELF file
@@ -69,21 +118,7 @@ impl StackUnwinder {
         let elf = object::File::parse(&*elf_buffer)?;
         assert!(elf.architecture() == object::Architecture::Riscv64);
 
-        // Try to find the .text section first (bare-metal), otherwise use text (Zephyr)
-        let (text_section, entry_point) = if let Some(section) = elf.section_by_name(".text") {
-            let entry = elf.entry();
-            println!("Bare-metal ELF detected: Using entry point at {:#x}", entry);
-            (section, entry) // Use ELF entry point
-        } else if let Some(section) = elf.section_by_name("text") {
-            let entry = section.address();
-            println!("Zephyr ELF detected: Using text section start at {:#x}", entry);
-            (section, entry) // Use section start
-        } else {
-            return Err(anyhow::anyhow!("No .text or text section found in the ELF file"));
-        };
-
-        let text_data = text_section.data()?;
-
+        // Initialize Capstone disassembler.
         let cs = Capstone::new()
             .riscv()
             .mode(ArchMode::RiscV64)
@@ -91,13 +126,14 @@ impl StackUnwinder {
             .detail(true)
             .build()?;
 
-        let decoded_instructions = cs.disasm_all(&text_data, entry_point)?;
-        trace!("[StackUnwinder::new] found {} instructions", decoded_instructions.len());
+        // Use our new functions to decode instructions from all executable sections.
+        let all_decoded_insns = decode_elf_instructions(&elf, &cs)?;
+        let insn_refs_map = build_insn_map(&all_decoded_insns);
 
-        // Create a map of address to instruction 
+        // Create a map of address to instruction info from the insn_refs_map.
         let mut insn_map: HashMap<u64, InsnInfo> = HashMap::new();
-        for insn in decoded_instructions.as_ref() {
-            insn_map.insert(insn.address(), InsnInfo::from(insn));
+        for (&addr, insn) in insn_refs_map.iter() {
+            insn_map.insert(addr, InsnInfo::from(*insn));
         }
 
         // create func_symbol_map
