@@ -62,17 +62,27 @@ pub struct StackUnwinder {
 
 impl StackUnwinder {
     pub fn new(elf_path: String) -> Result<Self> {
-        // create insn_map
+        // Open and read the ELF file
         let mut elf_file = File::open(elf_path.clone())?;
         let mut elf_buffer = Vec::new();
         elf_file.read_to_end(&mut elf_buffer)?;
         let elf = object::File::parse(&*elf_buffer)?;
         assert!(elf.architecture() == object::Architecture::Riscv64);
 
-        // Find the .text section (where the executable code resides)
-        let text_section = elf.section_by_name(".text").ok_or_else(|| anyhow::anyhow!("No .text section found"))?;
+        // Try to find the .text section first (bare-metal), otherwise use text (Zephyr)
+        let (text_section, entry_point) = if let Some(section) = elf.section_by_name(".text") {
+            let entry = elf.entry();
+            println!("Bare-metal ELF detected: Using entry point at {:#x}", entry);
+            (section, entry) // Use ELF entry point
+        } else if let Some(section) = elf.section_by_name("text") {
+            let entry = section.address();
+            println!("Zephyr ELF detected: Using text section start at {:#x}", entry);
+            (section, entry) // Use section start
+        } else {
+            return Err(anyhow::anyhow!("No .text or text section found in the ELF file"));
+        };
+
         let text_data = text_section.data()?;
-        let entry_point = elf.entry();
 
         let cs = Capstone::new()
             .riscv()
@@ -84,8 +94,8 @@ impl StackUnwinder {
         let decoded_instructions = cs.disasm_all(&text_data, entry_point)?;
         trace!("[StackUnwinder::new] found {} instructions", decoded_instructions.len());
 
-        // create a map of address to instruction 
-        let mut insn_map : HashMap<u64, InsnInfo> = HashMap::new();
+        // Create a map of address to instruction 
+        let mut insn_map: HashMap<u64, InsnInfo> = HashMap::new();
         for insn in decoded_instructions.as_ref() {
             insn_map.insert(insn.address(), InsnInfo::from(insn));
         }
