@@ -7,14 +7,12 @@ use std::io::{BufWriter, Write};
 pub struct TxtReceiver {
     writer: BufWriter<File>,
     receiver: BusReceiver,
-    insn_count: u64,
 }
 
 impl TxtReceiver {
     pub fn new(bus_rx: BusReader<Entry>) -> Self {
         Self { writer: BufWriter::new(File::create("trace.txt").unwrap()), 
-                receiver: BusReceiver { name: "txt".to_string(), bus_rx: bus_rx, checksum: 0 },
-                insn_count: 0 }
+                receiver: BusReceiver { name: "txt".to_string(), bus_rx: bus_rx, checksum: 0 } }
     }
 }
 
@@ -40,7 +38,6 @@ impl AbstractReceiver for TxtReceiver {
                     }
                 }
                 self.writer.write_all(b"\n").unwrap();
-                self.insn_count += 1;
             }
             Event::BPHit => {
                 self.writer.write_all(format!("[hit count: {}]", entry.timestamp.unwrap()).as_bytes()).unwrap();
@@ -59,6 +56,5 @@ impl AbstractReceiver for TxtReceiver {
 
     fn _flush(&mut self) {
         self.writer.flush().unwrap();
-        println!("insn_count: {}", self.insn_count);
     }
 }

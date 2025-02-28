@@ -69,7 +69,25 @@ impl AbstractReceiver for VBBReceiver {
 
   fn _flush(&mut self) {
     for (bb, intervals) in self.bb_records.iter() {
-      self.writer.write_all(format!("BB: {:#x}-{:#x}, INTERVALS: {:?}\n", bb.start_addr, bb.end_addr, intervals).as_bytes()).unwrap();
+      if intervals.is_empty() {
+        continue;
+      }
+      
+      // Calculate mean manually
+      let sum: u64 = intervals.iter().sum();
+      let mean = sum as f64 / intervals.len() as f64;
+      
+      // Calculate standard deviation manually with a more stable algorithm
+      let variance = intervals.iter()
+        .map(|&x| {
+          let diff = x as f64 - mean;
+          diff * diff
+        })
+        .sum::<f64>() / intervals.len() as f64;
+      let stddev = variance.sqrt();
+      
+      self.writer.write_all(format!("BB: {:#x}-{:#x}, MEAN: {}, COUNT: {}, STDDEV: {}\n", 
+        bb.start_addr, bb.end_addr, mean, intervals.len(), stddev).as_bytes()).unwrap();
     }
     self.writer.flush().unwrap();
   }

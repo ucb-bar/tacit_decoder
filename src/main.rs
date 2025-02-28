@@ -16,6 +16,7 @@ mod frontend {
 mod backend {
     pub mod abstract_receiver;
     pub mod event;
+    pub mod stats_receiver;
     pub mod txt_receiver;
     pub mod json_receiver;
     pub mod afdo_receiver;
@@ -49,6 +50,7 @@ use frontend::bp_double_saturating_counter::BpDoubleSaturatingCounter;
 use frontend::br_mode::BrMode;
 // backend dependency
 use backend::event::{Entry, Event};
+use backend::stats_receiver::StatsReceiver;
 use backend::txt_receiver::TxtReceiver;
 use backend::json_receiver::JsonReceiver;
 use backend::afdo_receiver::AfdoReceiver;
@@ -91,6 +93,9 @@ struct Args {
     // print the timestamp in the decoded trace file
     #[arg(short, long, default_value_t = false)]
     timestamp: bool,
+    // output the decoded trace in stats format
+    #[arg(long, default_value_t = false)]
+    to_stats: bool,
     // output the decoded trace in text format
     #[arg(long, default_value_t = true)]
     to_txt: bool,
@@ -211,6 +216,8 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
     }
 
     let encoded_trace_file = File::open(args.encoded_trace.clone())?;
+    // get the file size
+    let file_size = encoded_trace_file.metadata()?.len();
     let mut encoded_trace_reader : BufReader<File> = BufReader::new(encoded_trace_file);
 
     let mut bp_counter = BpDoubleSaturatingCounter::new(args.bp_entries);
@@ -301,7 +308,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
                     }
                     let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::TakenBranch, timestamp, pc, new_pc));
-                    trace!("pc before br: {:x}, after taken branch: {:x}", pc, new_pc);
+                    // trace!("pc before br: {:x}, after taken branch: {:x}", pc, new_pc);
                     pc = new_pc;
                 }
                 FHeader::FNt => {
@@ -311,7 +318,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
                     }
                     let new_pc = pc + insn_to_resolve.len() as u64;
                     bus.broadcast(Entry::new_timed_event(Event::NonTakenBranch, timestamp, pc, new_pc));
-                    trace!("pc before nt: {:x}, after nt: {:x}", pc, new_pc);
+                    // trace!("pc before nt: {:x}, after nt: {:x}", pc, new_pc);
                     pc = new_pc;
                 }
                 FHeader::FIj => {
@@ -321,7 +328,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
                     }
                     let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::InferrableJump, timestamp, pc, new_pc));
-                    trace!("pc before ij: {:x}, after ij: {:x}", pc, new_pc);
+                    // trace!("pc before ij: {:x}, after ij: {:x}", pc, new_pc);
                     pc = new_pc;
                 }
                 FHeader::FUj => {
@@ -331,7 +338,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
                     }
                     let new_pc = refund_addr(packet.target_address ^ (pc >> 1));
                     bus.broadcast(Entry::new_timed_event(Event::UninferableJump, timestamp, pc, new_pc));
-                    trace!("pc before uj: {:x}, after uj: {:x}", pc, new_pc);
+                    // trace!("pc before uj: {:x}, after uj: {:x}", pc, new_pc);
                     pc = new_pc;
                 }
                 _ => {
@@ -355,6 +362,17 @@ fn main() -> Result<()> {
 
     let mut bus: Bus<Entry> = Bus::new(BUS_SIZE);
     let mut receivers: Vec<Box<dyn AbstractReceiver>> = vec![];
+
+    // add a receiver to the bus for stats output
+    if args.to_stats {
+        let encoded_trace_file = File::open(args.encoded_trace.clone())?;
+        // get the file size
+        let file_size = encoded_trace_file.metadata()?.len();
+        // close the file
+        drop(encoded_trace_file);
+        let stats_bus_endpoint = bus.add_rx();
+        receivers.push(Box::new(StatsReceiver::new(stats_bus_endpoint, BrMode::from(args.br_mode), file_size)));
+    }
     
     // add a receiver to the bus for txt output
     if args.to_txt {
