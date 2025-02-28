@@ -190,35 +190,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
     let elf = object::File::parse(&*elf_buffer)?;
     assert!(elf.architecture() == object::Architecture::Riscv64);
 
-    // Iterate over all sections and print their names and flags
-    println!("Executable ELF sections:");
-    for section in elf.sections() {
-        let name = section.name().unwrap_or("<unnamed>");
-        let flags = section.flags();
-
-        match flags {
-            object::SectionFlags::Elf { sh_flags } if sh_flags & (SHF_EXECINSTR as u64) != 0 => {
-                println!("  Executable Section: {} | Flags: {:#x}", name, sh_flags);
-            }
-            _ => continue, // Skip non-executable sections
-        }
-    }
-
-    // Try to find the .text section first (bare-metal)
-    let (text_section, entry_point) = if let Some(section) = elf.section_by_name(".text") {
-        let entry = elf.entry();
-        println!("Bare-metal ELF detected: Using entry point at {:#x}", entry);
-        (section, entry) // Use ELF entry point
-    } else if let Some(section) = elf.section_by_name("text") {
-        let entry = section.address();
-        println!("Zephyr ELF detected: Using text section start at {:#x}", entry);
-        (section, entry) // Use section start
-    } else {
-        return Err(anyhow::anyhow!("No .text or text section found in the ELF file"));
-    };
-
-    let text_data = text_section.data()?;
-
+    // Initialize Capstone disassembler
     let cs = Capstone::new()
         .riscv()
         .mode(ArchMode::RiscV64)
@@ -226,13 +198,39 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
         .detail(true)
         .build()?;
 
-    let decoded_instructions = cs.disasm_all(&text_data, entry_point)?;
-    debug!("[main] found {} instructions", decoded_instructions.len());
+    // First phase: decode instructions from all executable sections
+    let mut all_decoded_insns = Vec::new();
+    println!("Processing executable ELF sections:");
+    for section in elf.sections() {
+        let name = section.name().unwrap_or("<unnamed>");
+        let flags = section.flags();
 
-    // Create a map of address to instruction
+        if let object::SectionFlags::Elf { sh_flags } = flags {
+            if sh_flags & (SHF_EXECINSTR as u64) != 0 {
+                let entry_point = section.address();
+                let text_data = section.data()?;
+                
+                println!("  Executable Section: {} at {:#x}", name, entry_point);
+
+                let decoded_instructions = cs.disasm_all(&text_data, entry_point)?;
+                debug!("[main] {}: found {} instructions", name, decoded_instructions.len());
+
+                // Save the decoded instructions for later use
+                all_decoded_insns.push(decoded_instructions);
+            }
+        }
+    }
+
+    if all_decoded_insns.is_empty() {
+        return Err(anyhow::anyhow!("No executable instructions found in ELF file"));
+    }
+
+    // Second phase: populate insn_map using references to instructions in all_decoded_insns
     let mut insn_map: HashMap<u64, &Insn> = HashMap::new();
-    for insn in decoded_instructions.as_ref() {
-        insn_map.insert(insn.address(), insn);
+    for decoded_instructions in &all_decoded_insns {
+        for insn in decoded_instructions.iter() {
+            insn_map.insert(insn.address(), insn);
+        }
     }
 
     let encoded_trace_file = File::open(args.encoded_trace.clone())?;
