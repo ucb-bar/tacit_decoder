@@ -66,7 +66,7 @@ pub fn decode_elf_instructions<'a>(
     cs: &'a Capstone,
 ) -> Result<Vec<capstone::Instructions<'a>>> {
     let mut all_decoded_insns = Vec::new();
-    println!("Processing executable ELF sections:");
+    debug!("Processing executable ELF sections:");
     for section in elf.sections() {
         let name = section.name().unwrap_or("<unnamed>");
         let flags = section.flags();
@@ -74,12 +74,10 @@ pub fn decode_elf_instructions<'a>(
         if let object::SectionFlags::Elf { sh_flags } = flags {
             if sh_flags & (SHF_EXECINSTR as u64) != 0 {
                 let entry_point = section.address();
-                // `section.data()` returns a slice that borrows from the ELF’s underlying buffer.
                 let text_data = section.data()?;
                 
-                println!("  Executable Section: {} at {:#x}", name, entry_point);
+                debug!("  Executable Section: {} at {:#x}", name, entry_point);
                 // disassemble using the provided Capstone reference;
-                // note that the returned Instructions borrow from `text_data`
                 let decoded_instructions = cs.disasm_all(&text_data, entry_point)?;
                 debug!("[main] {}: found {} instructions", name, decoded_instructions.len());
 
@@ -96,7 +94,7 @@ pub fn decode_elf_instructions<'a>(
 }
 
 /// Given a slice of decoded instruction groups, build a map from instruction address
-/// to a reference to the instruction. The returned map borrows from `decoded_insns`.
+/// to a reference to the instruction. 
 pub fn build_insn_map<'a>(
     decoded_insns: &'a [capstone::Instructions<'a>],
 ) -> HashMap<u64, &'a capstone::Insn<'a>> {
@@ -136,46 +134,86 @@ impl StackUnwinder {
             insn_map.insert(addr, InsnInfo::from(*insn));
         }
 
-        // create func_symbol_map
+        // Create func_symbol_map.
         let mut func_symbol_map: IndexMap<u64, SymbolInfo> = IndexMap::new();
-        // object handler
-        let elf_data = fs::read(elf_path.clone()).unwrap();
-        let obj_file = object::File::parse(&*elf_data).unwrap();
-        let loader = Loader::new(elf_path.clone()).unwrap();
+        // Re-read the ELF data for symbol processing.
+        let elf_data = fs::read(elf_path.clone())?;
+        let obj_file = object::File::parse(&*elf_data)?;
+        // Convert the loader error into an anyhow error so that its error type is Send + Sync.
+        let loader = Loader::new(elf_path.clone())
+            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
         let mut next_index = 0;
-        
-        // find the first text symbol and get its section
-        let text_symbol = obj_file.symbols().find(|s| s.kind() == object::SymbolKind::Text).unwrap();
-        let text_section = text_symbol.section();
-        
-        /*
-        we cannot directly use s.kind() == object::SymbolKind::Text because it is not equivalent to section == .text
-        the labels in assembly will be ommitted if we do so;
-        instead, we filter by section == .text and then filter out the symbols that start with $x
-        $x is a dummy symbol marking the march compilation options
-         */
-        for symbol in obj_file.symbols().filter(|s| s.section() == text_section && !s.name().unwrap().starts_with("$x")) {
-            let func_addr = symbol.address();
-            let loc: SourceLocation = SourceLocation::from_addr2line(loader.find_location(func_addr).unwrap());
-            let func_info = SymbolInfo {
-                name: String::from(symbol.name().unwrap()),
-                index: next_index,
-                line: loc.lines,
-                file: String::from(loc.file),
-            };
-            // debug!("func_info: addr: {:#x}, name: {}, index: {}", func_addr, func_info.name, func_info.index);
-            // check if the func_addr is already in the map
-            if func_symbol_map.contains_key(&func_addr) {
-                warn!("func_addr: {:#x} already in the map with name: {}", func_addr, func_symbol_map[&func_addr].name);
-                warn!("{} is alias and will be ignored", func_info.name);
-            } else {
-                func_symbol_map.insert(func_addr, func_info);
-                next_index += 1;
+
+        // Build a set of all executable section indices.
+        use std::collections::HashSet;
+        let exe_section_indices: HashSet<_> = obj_file.sections()
+            .filter_map(|section| {
+                let flags = section.flags();
+                if let object::SectionFlags::Elf { sh_flags } = flags {
+                    if sh_flags & (SHF_EXECINSTR as u64) != 0 {
+                        return Some(section.index());
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // Iterate over all symbols from executable sections.
+        for symbol in obj_file.symbols() {
+            if let Some(section_index) = symbol.section_index() {
+                if exe_section_indices.contains(&section_index) {
+                    if let Ok(name) = symbol.name() {
+                        // Skip dummy symbols
+                        if !name.starts_with("$x") {
+                            let func_addr = symbol.address();
+                            if let Ok(Some(location)) = loader.find_location(func_addr) {
+                                let loc: SourceLocation = SourceLocation::from_addr2line(Some(location));
+                                let new_info = SymbolInfo {
+                                    name: name.to_string(),
+                                    index: next_index,
+                                    line: loc.lines,
+                                    file: loc.file.to_string(),
+                                };
+
+                                if let Some(existing) = func_symbol_map.get_mut(&func_addr) {
+                                    // If the existing entry has an empty name and the new one does not,
+                                    // update the entry.
+                                    if existing.name.trim().is_empty() && !new_info.name.trim().is_empty() {
+                                        debug!(
+                                            "Updating symbol at {:#x} from an empty name to {}",
+                                            func_addr, new_info.name
+                                        );
+                                        *existing = new_info;
+                                    } else {
+                                        warn!(
+                                            "func_addr: {:#x} already in the map with name: {}",
+                                            func_addr, existing.name
+                                        );
+                                        warn!("{} is alias and will be ignored", new_info.name);
+                                    }
+                                } else {
+                                    func_symbol_map.insert(func_addr, new_info);
+                                    next_index += 1;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
+
+
         // print the size of the func_symbol_map
         debug!("func_symbol_map size: {}", func_symbol_map.len());
+
+        debug!("Function Symbol Map:");
+        for (addr, sym_info) in &func_symbol_map {
+            debug!("Address: 0x{:x}, Name: {}", addr, sym_info.name);
+        }
+
+
+
 
         // sort the func_symbol_map by address
         let mut func_symbol_addr_sorted = func_symbol_map.keys().cloned().collect::<Vec<u64>>();
