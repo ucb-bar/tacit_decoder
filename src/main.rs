@@ -150,20 +150,28 @@ fn compute_offset(insn: &Insn) -> i64 {
 }
 
 // step until encountering a br/jump
-fn step_bb(pc: u64, insn_map: &HashMap<u64, &Insn>, bus: &mut Bus<Entry>) -> u64 {
+fn step_bb(pc: u64, insn_map: &HashMap<u64, &Insn>, bus: &mut Bus<Entry>, br_mode: &BrMode) -> u64 {
     let mut pc = pc;
+    let stop_on_ij = *br_mode == BrMode::BrTarget;
     loop {
         let insn = insn_map.get(&pc).unwrap();
         bus.broadcast(Entry::new_insn(insn));
-        if BRANCH_OPCODES.contains(&insn.mnemonic().unwrap()) || IJ_OPCODES.contains(&insn.mnemonic().unwrap()) || UJ_OPCODES.contains(&insn.mnemonic().unwrap()) {
-            break;
+        if stop_on_ij {
+            if BRANCH_OPCODES.contains(&insn.mnemonic().unwrap()) || IJ_OPCODES.contains(&insn.mnemonic().unwrap()) || UJ_OPCODES.contains(&insn.mnemonic().unwrap()) {
+                break;
+            } else {
+                pc += insn.len() as u64;
+            }
+        } else {
+            if BRANCH_OPCODES.contains(&insn.mnemonic().unwrap()) || UJ_OPCODES.contains(&insn.mnemonic().unwrap()) {
+                break;
+            } else if IJ_OPCODES.contains(&insn.mnemonic().unwrap()) {
+                let new_pc = (pc as i64 + compute_offset(insn) as i64) as u64;
+                pc = new_pc;
+            } else {
+                pc += insn.len() as u64;
+            }
         }
-        // REMOVE ME: if we encounter something starts with b, j, c.b, or c.j, we should report
-        if insn.mnemonic().unwrap().starts_with("b") || insn.mnemonic().unwrap().starts_with("j") || insn.mnemonic().unwrap().starts_with("c.b") || insn.mnemonic().unwrap().starts_with("c.j") {
-            bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
-            panic!("UNHANDLED: pc: {:x}, insn: {}", pc, insn.mnemonic().unwrap());
-        }
-        pc += insn.len() as u64;
     }
     pc
 }
@@ -216,15 +224,12 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
     }
 
     let encoded_trace_file = File::open(args.encoded_trace.clone())?;
-    // get the file size
-    let file_size = encoded_trace_file.metadata()?.len();
     let mut encoded_trace_reader : BufReader<File> = BufReader::new(encoded_trace_file);
 
     let mut bp_counter = BpDoubleSaturatingCounter::new(args.bp_entries);
-    let mut hit_count = 0;
-    let mut miss_count = 0;
 
     let br_mode = BrMode::from(args.br_mode);
+    let mode_is_predict = br_mode == BrMode::BrPredict || br_mode == BrMode::BrHistory;
 
     let packet = frontend::packet::read_first_packet(&mut encoded_trace_reader)?;
     let mut packet_count = 0;
@@ -241,10 +246,6 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
         if packet.f_header == FHeader::FSync {
             pc = step_bb_until(pc, &insn_map, refund_addr(packet.target_address), &mut bus);
             println!("detected FSync packet, trace ending!");
-            if br_mode == BrMode::BrPredict {
-                println!("hit count: {}, miss count: {}, hit rate: {}", 
-                        hit_count, miss_count, hit_count as f64 / (hit_count + miss_count) as f64);
-            }
             bus.broadcast(Entry::new_timed_event(Event::End, packet.timestamp, pc, 0));
             break;
         } else if packet.f_header == FHeader::FTrap {
@@ -252,12 +253,11 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             pc = refund_addr(packet.target_address ^ (pc >> 1));
             timestamp += packet.timestamp;
             bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, packet.trap_address, pc));
-        } else if br_mode == BrMode::BrPredict && packet.f_header == FHeader::FTb { // predicted hit
+        } else if mode_is_predict && packet.f_header == FHeader::FTb { // predicted hit
             bus.broadcast(Entry::new_timed_event(Event::BPHit, packet.timestamp, pc, pc));
-            hit_count += packet.timestamp;
             // predict for timestamp times
             for _ in 0..packet.timestamp {
-                pc = step_bb(pc, &insn_map, &mut bus);
+                pc = step_bb(pc, &insn_map, &mut bus, &br_mode);
                 let insn_to_resolve = insn_map.get(&pc).unwrap();
                 if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
                     bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
@@ -274,11 +274,10 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
                     pc = new_pc;
                 }
             }
-        } else if br_mode == BrMode::BrPredict && packet.f_header == FHeader::FNt { // predicted miss
+        } else if mode_is_predict && packet.f_header == FHeader::FNt { // predicted miss
             timestamp += packet.timestamp;
             bus.broadcast(Entry::new_timed_event(Event::BPMiss, timestamp, pc, pc));
-            miss_count += 1;
-            pc = step_bb(pc, &insn_map, &mut bus);
+            pc = step_bb(pc, &insn_map, &mut bus, &br_mode);
             let insn_to_resolve = insn_map.get(&pc).unwrap();
             if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
                 bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
@@ -296,7 +295,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             }
         } else  {
             // trace!("pc before step_bb: {:x}", pc);
-            pc = step_bb(pc, &insn_map, &mut bus);
+            pc = step_bb(pc, &insn_map, &mut bus, &br_mode);
             let insn_to_resolve = insn_map.get(&pc).unwrap();
             // trace!("pc after step_bb: {:x}", pc);
             timestamp += packet.timestamp;
