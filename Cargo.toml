@@ -2,7 +2,6 @@
 members = [
   ".",
   "crates/gcno_reader",
-  "crates/useit_decoder"
 ]
 
 [package]
@@ -26,4 +25,3 @@ gcno_reader = { path = "crates/gcno_reader" }
 addr2line = "0.24.2"
 indexmap = "2.7.0"
 jsonschema = "0.17"
-useit_decoder = { path = "crates/useit_decoder" }
