@@ -41,7 +41,8 @@ use clap::Parser;
 use capstone::prelude::*;
 use capstone::arch::riscv::{ArchMode, ArchExtraMode};
 use capstone::Insn;
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, SectionFlags};
+use object::elf::SHF_EXECINSTR;
 // bus dependency
 use bus::Bus;
 use std::thread;
@@ -60,6 +61,9 @@ use backend::speedscope_receiver::SpeedscopeReceiver;
 use backend::vpp_receiver::VPPReceiver;
 use backend::foc_receiver::FOCReceiver;
 use backend::vbb_receiver::VBBReceiver;
+// re-use elf-decoding and map construction
+use backend::stack_unwinder::decode_elf_instructions;
+use backend::stack_unwinder::build_insn_map;
 // error handling
 use anyhow::Result;
 // logging
@@ -202,11 +206,7 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
     let elf = object::File::parse(&*elf_buffer)?;
     assert!(elf.architecture() == object::Architecture::Riscv64);
 
-    // Find the .text section (where the executable code resides)
-    let text_section = elf.section_by_name(".text").ok_or_else(|| anyhow::anyhow!("No .text section found"))?;
-    let text_data = text_section.data()?;
-    let entry_point = elf.entry();
-
+    // Initialize Capstone disassembler.
     let cs = Capstone::new()
         .riscv()
         .mode(ArchMode::RiscV64)
@@ -214,14 +214,8 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
         .detail(true)
         .build()?;
 
-    let decoded_instructions = cs.disasm_all(&text_data, entry_point)?;
-    debug!("[main] found {} instructions", decoded_instructions.len());
-
-    // create a map of address to instruction 
-    let mut insn_map : HashMap<u64, &Insn> = HashMap::new();
-    for insn in decoded_instructions.as_ref() {
-        insn_map.insert(insn.address(), insn);
-    }
+    let all_decoded_insns = decode_elf_instructions(&elf, &cs)?;
+    let insn_map = build_insn_map(&all_decoded_insns);
 
     let encoded_trace_file = File::open(args.encoded_trace.clone())?;
     let mut encoded_trace_reader : BufReader<File> = BufReader::new(encoded_trace_file);
