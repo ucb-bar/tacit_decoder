@@ -1,6 +1,6 @@
 extern crate clap;
 extern crate object;
-extern crate capstone;
+extern crate rvdasm;
 extern crate bus;
 extern crate log;
 extern crate env_logger;
@@ -18,7 +18,6 @@ mod backend {
     pub mod event;
     pub mod stats_receiver;
     pub mod txt_receiver;
-    pub mod json_receiver;
     pub mod afdo_receiver;
     pub mod gcda_receiver;
     pub mod stack_unwinder;
@@ -38,9 +37,8 @@ use std::collections::HashMap;
 // argparse dependency
 use clap::Parser;
 // objdump dependency
-use capstone::prelude::*;
-use capstone::arch::riscv::{ArchMode, ArchExtraMode};
-use capstone::Insn;
+use rvdasm::disassembler::*;
+use rvdasm::insn::*;
 use object::{Object, ObjectSection};
 // bus dependency
 use bus::Bus;
@@ -52,7 +50,6 @@ use frontend::br_mode::BrMode;
 use backend::event::{Entry, Event};
 use backend::stats_receiver::StatsReceiver;
 use backend::txt_receiver::TxtReceiver;
-use backend::json_receiver::JsonReceiver;
 use backend::afdo_receiver::AfdoReceiver;
 use backend::abstract_receiver::AbstractReceiver;
 use backend::gcda_receiver::GcdaReceiver;
@@ -99,9 +96,6 @@ struct Args {
     // output the decoded trace in text format
     #[arg(long, default_value_t = true)]
     to_txt: bool,
-    // output the decoded trace in JSON format
-    #[arg(long, default_value_t = false)]
-    to_json: bool,
     // output the decoded trace in afdo format
     #[arg(long, default_value_t = false)]
     to_afdo: bool,
@@ -129,67 +123,48 @@ fn refund_addr(addr: u64) -> u64 {
     addr << 1
 }
 
-// FIXME: hacky way to get the offset operand, always the last one
-fn compute_offset(insn: &Insn) -> i64 {
-    // trace!("insn: {:?}", insn);
-    let offset = insn.op_str().unwrap().split(",").last().unwrap();
-    // remove leading spaces
-    let offset = offset.trim();
-    // trace!("offset: {:?}", offset);
-    let offset_value: i64;
-    if offset.starts_with("-0x") {
-        offset_value = i64::from_str_radix(&offset[3..], 16).unwrap() * -1;
-    } else if offset.starts_with("0x") {
-        offset_value = i64::from_str_radix(&offset[2..], 16).unwrap();
-    } else if offset.starts_with("-") {
-        offset_value = i64::from_str_radix(&offset[1..], 10).unwrap() * -1;
-    } else {
-        offset_value = i64::from_str_radix(&offset, 10).unwrap();
-    }
-    offset_value
-}
-
 // step until encountering a br/jump
-fn step_bb(pc: u64, insn_map: &HashMap<u64, &Insn>, bus: &mut Bus<Entry>, br_mode: &BrMode) -> u64 {
+fn step_bb(pc: u64, insn_map: &HashMap<u64, Insn>, bus: &mut Bus<Entry>, br_mode: &BrMode) -> u64 {
     let mut pc = pc;
     let stop_on_ij = *br_mode == BrMode::BrTarget;
     loop {
+        trace!("stepping bb pc: {:x}", pc);
         let insn = insn_map.get(&pc).unwrap();
-        bus.broadcast(Entry::new_insn(insn));
+        bus.broadcast(Entry::new_insn(insn, pc));
         if stop_on_ij {
-            if BRANCH_OPCODES.contains(&insn.mnemonic().unwrap()) || IJ_OPCODES.contains(&insn.mnemonic().unwrap()) || UJ_OPCODES.contains(&insn.mnemonic().unwrap()) {
+            if insn.is_branch() || insn.is_direct_jump() || insn.is_indirect_jump() {
                 break;
             } else {
-                pc += insn.len() as u64;
+                pc += insn.len as u64;
             }
         } else {
-            if BRANCH_OPCODES.contains(&insn.mnemonic().unwrap()) || UJ_OPCODES.contains(&insn.mnemonic().unwrap()) {
+            if insn.is_branch() || insn.is_indirect_jump() {
                 break;
-            } else if IJ_OPCODES.contains(&insn.mnemonic().unwrap()) {
-                let new_pc = (pc as i64 + compute_offset(insn) as i64) as u64;
+            } else if insn.is_direct_jump() {
+                let new_pc = (pc as i64 + insn.get_imm().unwrap().get_val_signed_imm() as i64) as u64;
                 pc = new_pc;
             } else {
-                pc += insn.len() as u64;
+                pc += insn.len as u64;
             }
         }
     }
     pc
 }
 
-fn step_bb_until(pc: u64, insn_map: &HashMap<u64, &Insn>, target_pc: u64, bus: &mut Bus<Entry>) -> u64 {
+fn step_bb_until(pc: u64, insn_map: &HashMap<u64, Insn>, target_pc: u64, bus: &mut Bus<Entry>) -> u64 {
     // println!("stepping bb from pc: {:x} until pc: {:x}", pc, target_pc);
     let mut pc = pc;
 
     loop {
         let insn = insn_map.get(&pc).unwrap();
-        bus.broadcast(Entry::new_insn(insn));
-        if BRANCH_OPCODES.contains(&insn.mnemonic().unwrap()) || IJ_OPCODES.contains(&insn.mnemonic().unwrap()) {
+        bus.broadcast(Entry::new_insn(insn, pc));
+        if insn.is_branch() || insn.is_direct_jump() {
             break;
         }
         if pc == target_pc {
             break;
         }
-        pc += insn.len() as u64;
+        pc += insn.len as u64;
     }
     pc
 }
@@ -200,28 +175,25 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
     let mut elf_buffer = Vec::new();
     elf_file.read_to_end(&mut elf_buffer)?;
     let elf = object::File::parse(&*elf_buffer)?;
-    assert!(elf.architecture() == object::Architecture::Riscv64);
+    let elf_arch = elf.architecture();
 
     // Find the .text section (where the executable code resides)
     let text_section = elf.section_by_name(".text").ok_or_else(|| anyhow::anyhow!("No .text section found"))?;
     let text_data = text_section.data()?;
     let entry_point = elf.entry();
 
-    let cs = Capstone::new()
-        .riscv()
-        .mode(ArchMode::RiscV64)
-        .extra_mode([ArchExtraMode::RiscVC].iter().copied())
-        .detail(true)
-        .build()?;
+    let xlen = if elf_arch == object::Architecture::Riscv64 {
+        Xlen::XLEN64
+    } else if elf_arch == object::Architecture::Riscv32 {
+        Xlen::XLEN32
+    } else {
+        panic!("Unsupported architecture: {:?}", elf_arch);
+    };
 
-    let decoded_instructions = cs.disasm_all(&text_data, entry_point)?;
-    debug!("[main] found {} instructions", decoded_instructions.len());
+    let dasm = Disassembler::new(xlen);
 
-    // create a map of address to instruction 
-    let mut insn_map : HashMap<u64, &Insn> = HashMap::new();
-    for insn in decoded_instructions.as_ref() {
-        insn_map.insert(insn.address(), insn);
-    }
+    let insn_map = dasm.disassemble_all(&text_data, entry_point);
+    debug!("[main] found {} instructions", insn_map.len());
 
     let encoded_trace_file = File::open(args.encoded_trace.clone())?;
     let mut encoded_trace_reader : BufReader<File> = BufReader::new(encoded_trace_file);
@@ -259,17 +231,17 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             for _ in 0..packet.timestamp {
                 pc = step_bb(pc, &insn_map, &mut bus, &br_mode);
                 let insn_to_resolve = insn_map.get(&pc).unwrap();
-                if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                if !BRANCH_OPCODES.contains(&insn_to_resolve.get_name().as_str()) {
                     bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
                     panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
                  }
                 let taken = bp_counter.predict(pc, true);
                 if taken {
-                    let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
+                    let new_pc = (pc as i64 + insn_to_resolve.get_imm().unwrap().get_val_signed_imm() as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::TakenBranch, timestamp, pc, new_pc));
                     pc = new_pc;
                 } else {
-                    let new_pc = pc + insn_to_resolve.len() as u64;
+                    let new_pc = pc + insn_to_resolve.len as u64;
                     bus.broadcast(Entry::new_timed_event(Event::NonTakenBranch, timestamp, pc, new_pc));
                     pc = new_pc;
                 }
@@ -279,17 +251,17 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             bus.broadcast(Entry::new_timed_event(Event::BPMiss, timestamp, pc, pc));
             pc = step_bb(pc, &insn_map, &mut bus, &br_mode);
             let insn_to_resolve = insn_map.get(&pc).unwrap();
-            if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+            if !BRANCH_OPCODES.contains(&insn_to_resolve.get_name().as_str()) {
                 bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
                 panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
              }
             let taken = bp_counter.predict(pc, false);
             if !taken { // reverse as we mispredicted
-                let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
+                let new_pc = (pc as i64 + insn_to_resolve.get_imm().unwrap().get_val_signed_imm() as i64) as u64;
                 bus.broadcast(Entry::new_timed_event(Event::TakenBranch, timestamp, pc, new_pc));
                 pc = new_pc;
             } else {
-                let new_pc = pc + insn_to_resolve.len() as u64;
+                let new_pc = pc + insn_to_resolve.len as u64;
                 bus.broadcast(Entry::new_timed_event(Event::NonTakenBranch, timestamp, pc, new_pc));
                 pc = new_pc;
             }
@@ -301,37 +273,37 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             timestamp += packet.timestamp;
             match packet.f_header {
                 FHeader::FTb => {
-                    if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                    if !BRANCH_OPCODES.contains(&insn_to_resolve.get_name().as_str()) {
                        bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
                        panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
                     }
-                    let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
+                    let new_pc = (pc as i64 + insn_to_resolve.get_imm().unwrap().get_val_signed_imm() as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::TakenBranch, timestamp, pc, new_pc));
                     // trace!("pc before br: {:x}, after taken branch: {:x}", pc, new_pc);
                     pc = new_pc;
                 }
                 FHeader::FNt => {
-                    if !BRANCH_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                    if !BRANCH_OPCODES.contains(&insn_to_resolve.get_name().as_str()) {
                         bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
                         panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
                     }
-                    let new_pc = pc + insn_to_resolve.len() as u64;
+                    let new_pc = pc + insn_to_resolve.len as u64;
                     bus.broadcast(Entry::new_timed_event(Event::NonTakenBranch, timestamp, pc, new_pc));
                     // trace!("pc before nt: {:x}, after nt: {:x}", pc, new_pc);
                     pc = new_pc;
                 }
                 FHeader::FIj => {
-                    if !IJ_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                    if !IJ_OPCODES.contains(&insn_to_resolve.get_name().as_str()) {
                         bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
                         panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
                     }
-                    let new_pc = (pc as i64 + compute_offset(insn_to_resolve) as i64) as u64;
+                    let new_pc = (pc as i64 + insn_to_resolve.get_imm().unwrap().get_val_signed_imm() as i64) as u64;
                     bus.broadcast(Entry::new_timed_event(Event::InferrableJump, timestamp, pc, new_pc));
                     // trace!("pc before ij: {:x}, after ij: {:x}", pc, new_pc);
                     pc = new_pc;
                 }
                 FHeader::FUj => {
-                    if !UJ_OPCODES.contains(&insn_to_resolve.mnemonic().unwrap()) {
+                    if !UJ_OPCODES.contains(&insn_to_resolve.get_name().as_str()) {
                         bus.broadcast(Entry::new_timed_event(Event::Panic, 0, pc, 0));
                         panic!("pc: {:x}, timestamp: {}, insn: {:?}", pc, timestamp, insn_to_resolve);
                     }
@@ -377,12 +349,6 @@ fn main() -> Result<()> {
     if args.to_txt {
         let txt_bus_endpoint = bus.add_rx();
         receivers.push(Box::new(TxtReceiver::new(txt_bus_endpoint)));
-    }
-
-    // add a receiver to the bus for json output
-    if args.to_json {
-        let json_bus_endpoint = bus.add_rx();
-        receivers.push(Box::new(JsonReceiver::new(json_bus_endpoint)));
     }
 
     if args.to_afdo {

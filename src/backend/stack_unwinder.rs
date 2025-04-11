@@ -2,9 +2,8 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 
 // objdump dependency
-use capstone::prelude::*;
-use capstone::arch::riscv::{ArchMode, ArchExtraMode};
-use capstone::Insn;
+use rvdasm::disassembler::*;
+use rvdasm::insn::*;
 use object::{Object, ObjectSection, ObjectSymbol};
 
 use std::fs::File;
@@ -28,34 +27,13 @@ pub struct SymbolInfo {
     pub file: String,
 }
 
-#[derive(Clone)]
-pub struct InsnInfo {
-    pub address: u64,
-    pub len: usize,
-    pub bytes: Vec<u8>,
-    pub mnemonic: String,
-    pub op_str: String,
-}
-
-impl<'a> From<&Insn<'a>> for InsnInfo {
-    fn from(insn: &Insn<'a>) -> Self {
-        Self {
-            address: insn.address(),
-            len: insn.len(),
-            bytes: insn.bytes().to_vec(),
-            mnemonic: insn.mnemonic().unwrap().to_string(),
-            op_str: insn.op_str().unwrap().to_string(),
-        }
-    }
-}
-
 pub struct StackUnwinder {
     // addr -> symbol info <name, index, line, file>
     func_symbol_map: IndexMap<u64, SymbolInfo>,
     // index -> addr range
     idx_2_addr_range: IndexMap<u32, (u64, u64)>,
     // addr -> insn
-    insn_map: HashMap<u64, InsnInfo>,
+    insn_map: HashMap<u64, Insn>,
     // stack model
     frame_stack: Vec<u32>, // Queue of index
 }
@@ -67,28 +45,25 @@ impl StackUnwinder {
         let mut elf_buffer = Vec::new();
         elf_file.read_to_end(&mut elf_buffer)?;
         let elf = object::File::parse(&*elf_buffer)?;
-        assert!(elf.architecture() == object::Architecture::Riscv64);
+        let elf_arch = elf.architecture();
 
         // Find the .text section (where the executable code resides)
         let text_section = elf.section_by_name(".text").ok_or_else(|| anyhow::anyhow!("No .text section found"))?;
         let text_data = text_section.data()?;
         let entry_point = elf.entry();
 
-        let cs = Capstone::new()
-            .riscv()
-            .mode(ArchMode::RiscV64)
-            .extra_mode([ArchExtraMode::RiscVC].iter().copied())
-            .detail(true)
-            .build()?;
+        let xlen = if elf_arch == object::Architecture::Riscv64 {
+            Xlen::XLEN64
+        } else if elf_arch == object::Architecture::Riscv32 {
+            Xlen::XLEN32
+        } else {
+            panic!("Unsupported architecture: {:?}", elf_arch);
+        };
 
-        let decoded_instructions = cs.disasm_all(&text_data, entry_point)?;
-        trace!("[StackUnwinder::new] found {} instructions", decoded_instructions.len());
+        let das = Disassembler::new(xlen);
 
-        // create a map of address to instruction 
-        let mut insn_map : HashMap<u64, InsnInfo> = HashMap::new();
-        for insn in decoded_instructions.as_ref() {
-            insn_map.insert(insn.address(), InsnInfo::from(insn));
-        }
+        let insn_map = das.disassemble_all(&text_data, entry_point);
+        trace!("[StackUnwinder::new] found {} instructions", insn_map.len());
 
         // create func_symbol_map
         let mut func_symbol_map: IndexMap<u64, SymbolInfo> = IndexMap::new();
@@ -179,8 +154,7 @@ impl StackUnwinder {
         if self.frame_stack.is_empty() {
             return (false, self.frame_stack.len(), closed_frames, None);
         }
-        // if we come in with an em
-        if prev_insn.mnemonic == "ret" || (prev_insn.mnemonic == "c.jr" && prev_insn.op_str == "ra") {
+        if prev_insn.is_indirect_jump() {
             loop {
                 // peek the top of the stack
                 if let Some(frame_idx) = self.frame_stack.last() {
