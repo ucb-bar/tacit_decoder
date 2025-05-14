@@ -4,7 +4,8 @@ use std::collections::HashMap;
 // objdump dependency
 use rvdasm::disassembler::*;
 use rvdasm::insn::*;
-use object::{Object, ObjectSection, ObjectSymbol};
+use object::{Object, ObjectSection, ObjectSymbol, SectionFlags};
+use object::elf::SHF_EXECINSTR;
 
 use std::fs::File;
 use std::io::Read;
@@ -47,11 +48,6 @@ impl StackUnwinder {
         let elf = object::File::parse(&*elf_buffer)?;
         let elf_arch = elf.architecture();
 
-        // Find the .text section (where the executable code resides)
-        let text_section = elf.section_by_name(".text").ok_or_else(|| anyhow::anyhow!("No .text section found"))?;
-        let text_data = text_section.data()?;
-        let entry_point = elf.entry();
-
         let xlen = if elf_arch == object::Architecture::Riscv64 {
             Xlen::XLEN64
         } else if elf_arch == object::Architecture::Riscv32 {
@@ -62,44 +58,84 @@ impl StackUnwinder {
 
         let das = Disassembler::new(xlen);
 
-        let insn_map = das.disassemble_all(&text_data, entry_point);
+        let mut insn_map = HashMap::new();
+        for section in elf.sections() {
+            if let object::SectionFlags::Elf { sh_flags } = section.flags() {
+                if sh_flags & (SHF_EXECINSTR as u64) != 0 {
+                    let addr = section.address();
+                    let data = section.data()?;
+                    let sec_map = das.disassemble_all(&data, addr);
+                    debug!(
+                        "section `{}` @ {:#x}: {} insns",
+                        section.name().unwrap_or("<unnamed>"),
+                        addr,
+                        sec_map.len()
+                    );
+                    insn_map.extend(sec_map);
+                }
+            }
+        }
+        if insn_map.is_empty() {
+            return Err(anyhow::anyhow!("No executable instructions found in ELF file"));
+        }
         trace!("[StackUnwinder::new] found {} instructions", insn_map.len());
+        
+        // Re‑open ELF for symbol processing
+        let elf_data = fs::read(&elf_path)?;
+        let obj_file = object::File::parse(&*elf_data)?;
+        let loader = Loader::new(&elf_path)
+            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
 
-        // create func_symbol_map
+        // Gather indices of all executable sections
+        let exec_secs: std::collections::HashSet<_> = obj_file
+            .sections()
+            .filter_map(|sec| {
+                if let SectionFlags::Elf { sh_flags } = sec.flags() {
+                    if sh_flags & (SHF_EXECINSTR as u64) != 0 {
+                        return Some(sec.index());
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // Build func_symbol_map from _all_ symbols in executable sections
         let mut func_symbol_map: IndexMap<u64, SymbolInfo> = IndexMap::new();
-        // object handler
-        let elf_data = fs::read(elf_path.clone()).unwrap();
-        let obj_file = object::File::parse(&*elf_data).unwrap();
-        let loader = Loader::new(elf_path.clone()).unwrap();
         let mut next_index = 0;
-        
-        // find the first text symbol and get its section
-        let text_symbol = obj_file.symbols().find(|s| s.kind() == object::SymbolKind::Text).unwrap();
-        let text_section = text_symbol.section();
-        
-        /*
-        we cannot directly use s.kind() == object::SymbolKind::Text because it is not equivalent to section == .text
-        the labels in assembly will be ommitted if we do so;
-        instead, we filter by section == .text and then filter out the symbols that start with $x
-        $x is a dummy symbol marking the march compilation options
-         */
-        for symbol in obj_file.symbols().filter(|s| s.section() == text_section && !s.name().unwrap().starts_with("$x")) {
-            let func_addr = symbol.address();
-            let loc: SourceLocation = SourceLocation::from_addr2line(loader.find_location(func_addr).unwrap());
-            let func_info = SymbolInfo {
-                name: String::from(symbol.name().unwrap()),
-                index: next_index,
-                line: loc.lines,
-                file: String::from(loc.file),
-            };
-            // debug!("func_info: addr: {:#x}, name: {}, index: {}", func_addr, func_info.name, func_info.index);
-            // check if the func_addr is already in the map
-            if func_symbol_map.contains_key(&func_addr) {
-                warn!("func_addr: {:#x} already in the map with name: {}", func_addr, func_symbol_map[&func_addr].name);
-                warn!("{} is alias and will be ignored", func_info.name);
-            } else {
-                func_symbol_map.insert(func_addr, func_info);
-                next_index += 1;
+        for symbol in obj_file.symbols() {
+            // only symbols tied to an exec section
+            if let Some(sec_idx) = symbol.section_index() {
+                if exec_secs.contains(&sec_idx) {
+                    if let Ok(name) = symbol.name() {
+                        if !name.starts_with("$x") {
+                            let addr = symbol.address();
+                            // lookup source location (may return None)
+                            if let Ok(Some(loc)) = loader.find_location(addr) {
+                                let src: SourceLocation = SourceLocation::from_addr2line(Some(loc));
+                                let info = SymbolInfo {
+                                    name: name.to_string(),
+                                    index: next_index,
+                                    line: src.lines,
+                                    file: src.file.to_string(),
+                                };
+                                // dedupe aliases: prefer non‑empty over empty
+                                if let Some(existing) = func_symbol_map.get_mut(&addr) {
+                                    if existing.name.trim().is_empty() && !info.name.trim().is_empty() {
+                                        *existing = info;
+                                    } else {
+                                        warn!(
+                                            "func_addr 0x{:x} already in map as `{}`, ignoring alias `{}`",
+                                            addr, existing.name, info.name
+                                        );
+                                    }
+                                } else {
+                                    func_symbol_map.insert(addr, info);
+                                    next_index += 1;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

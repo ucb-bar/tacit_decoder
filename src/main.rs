@@ -39,7 +39,8 @@ use clap::Parser;
 // objdump dependency
 use rvdasm::disassembler::*;
 use rvdasm::insn::*;
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, ObjectSymbol, SectionFlags};
+use object::elf::SHF_EXECINSTR;
 // bus dependency
 use bus::Bus;
 use std::thread;
@@ -177,10 +178,6 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
     let elf = object::File::parse(&*elf_buffer)?;
     let elf_arch = elf.architecture();
 
-    // Find the .text section (where the executable code resides)
-    let text_section = elf.section_by_name(".text").ok_or_else(|| anyhow::anyhow!("No .text section found"))?;
-    let text_data = text_section.data()?;
-    let entry_point = elf.entry();
 
     let xlen = if elf_arch == object::Architecture::Riscv64 {
         Xlen::XLEN64
@@ -192,7 +189,26 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
 
     let dasm = Disassembler::new(xlen);
 
-    let insn_map = dasm.disassemble_all(&text_data, entry_point);
+    let mut insn_map = HashMap::new();
+    for section in elf.sections() {
+        if let object::SectionFlags::Elf { sh_flags } = section.flags() {
+            if sh_flags & (SHF_EXECINSTR as u64) != 0 {
+                let addr = section.address();
+                let data = section.data()?;
+                let sec_map = dasm.disassemble_all(&data, addr);
+                debug!(
+                    "section `{}` @ {:#x}: {} insns",
+                    section.name().unwrap_or("<unnamed>"),
+                    addr,
+                    sec_map.len()
+                );
+                insn_map.extend(sec_map);
+            }
+        }
+    }
+    if insn_map.is_empty() {
+        return Err(anyhow::anyhow!("No executable instructions found in ELF file"));
+    }
     debug!("[main] found {} instructions", insn_map.len());
 
     let encoded_trace_file = File::open(args.encoded_trace.clone())?;
