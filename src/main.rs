@@ -18,6 +18,8 @@ mod backend {
     pub mod event;
     pub mod stats_receiver;
     pub mod txt_receiver;
+    pub mod stack_txt_receiver;
+    pub mod atomic_receiver;
     pub mod afdo_receiver;
     pub mod gcda_receiver;
     pub mod stack_unwinder;
@@ -51,6 +53,8 @@ use frontend::br_mode::BrMode;
 use backend::event::{Entry, Event};
 use backend::stats_receiver::StatsReceiver;
 use backend::txt_receiver::TxtReceiver;
+use backend::stack_txt_receiver::StackTxtReceiver;
+use backend::atomic_receiver::AtomicReceiver;
 use backend::afdo_receiver::AfdoReceiver;
 use backend::abstract_receiver::AbstractReceiver;
 use backend::gcda_receiver::GcdaReceiver;
@@ -97,6 +101,12 @@ struct Args {
     // output the decoded trace in text format
     #[arg(long, default_value_t = true)]
     to_txt: bool,
+    // output the tracked callstack in text format
+    #[arg(long, default_value_t = false)]
+    to_stack_txt: bool,
+    // output a trace of atomic operations in text format 
+    #[arg(long, default_value_t = false)]
+    to_atomics: bool,
     // output the decoded trace in afdo format
     #[arg(long, default_value_t = false)]
     to_afdo: bool,
@@ -366,6 +376,17 @@ fn main() -> Result<()> {
         let txt_bus_endpoint = bus.add_rx();
         receivers.push(Box::new(TxtReceiver::new(txt_bus_endpoint)));
     }
+
+    if args.to_stack_txt {
+        let stack_txt_rx = StackTxtReceiver::new(bus.add_rx(), args.binary.clone());
+        receivers.push(Box::new(stack_txt_rx));
+    }
+
+    if args.to_atomics {
+        let atomic_rx = AtomicReceiver::new(bus.add_rx(), args.binary.clone());
+        receivers.push(Box::new(atomic_rx));
+    }
+
 
     if args.to_afdo {
         let afdo_bus_endpoint = bus.add_rx();
