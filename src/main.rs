@@ -24,6 +24,7 @@ mod backend {
     pub mod gcda_receiver;
     pub mod stack_unwinder;
     pub mod speedscope_receiver;
+    pub mod perfetto_receiver;
     pub mod vpp_receiver;
     pub mod foc_receiver;
     pub mod vbb_receiver;
@@ -59,6 +60,7 @@ use backend::afdo_receiver::AfdoReceiver;
 use backend::abstract_receiver::AbstractReceiver;
 use backend::gcda_receiver::GcdaReceiver;
 use backend::speedscope_receiver::SpeedscopeReceiver;
+use backend::perfetto_receiver::PerfettoReceiver;
 use backend::vpp_receiver::VPPReceiver;
 use backend::foc_receiver::FOCReceiver;
 use backend::vbb_receiver::VBBReceiver;
@@ -119,6 +121,9 @@ struct Args {
     // output the decoded trace in speedscope format
     #[arg(long, default_value_t = false)]
     to_speedscope: bool,
+    // output the decoded trace in perfetto format
+    #[arg(long, default_value_t = false)]
+    to_perfetto: bool,
     // output the decoded trace in vpp format
     #[arg(long, default_value_t = false)]
     to_vpp: bool,
@@ -406,6 +411,11 @@ fn main() -> Result<()> {
     if args.to_speedscope {
         let speedscope_bus_endpoint = bus.add_rx();
         receivers.push(Box::new(SpeedscopeReceiver::new(speedscope_bus_endpoint, args.binary.clone())));
+    }
+
+    if args.to_perfetto {
+        let perfetto_bus_endpoint = bus.add_rx();
+        receivers.push(Box::new(PerfettoReceiver::new(perfetto_bus_endpoint, args.binary.clone())));
     }
 
     if args.to_vpp {
