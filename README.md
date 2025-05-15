@@ -17,6 +17,8 @@ cargo run -- --binary [binary] --encoded-trace [/path/to/trace] [optional argume
 ### Optional Arguments
 
 * `--to-txt` - attach an analysis endpoint to dump all trace events and instructions decoded to a text file for reading
+* `--to-stack-txt` - attach an analysis endpoint to dump decoded stack trace traversal to a text file for reading
+* `--to-atomics` - attach an analysis endpoint to dump a trace of atomic operators and their stack frames to a text file for reading
 * `--to-json` - attach an analysis endpoint to dump all trace events to a json file
 * `--to-afdo` - attach an analysis endpoint to convert traces to branch counts and range counts, for afdo tools to consume
 * `--to-gcda` - attach an analysis endpoint to convert traces to a .gcda file. Needs to speicify the source gcno file
