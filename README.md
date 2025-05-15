@@ -16,13 +16,15 @@ cargo run -- --binary [binary] --encoded-trace [/path/to/trace] [optional argume
 
 ### Optional Arguments
 
-* `--to_txt` - attach an analysis endpoint to dump all trace events and instructions decoded to a text file for reading
+* `--to-txt` - attach an analysis endpoint to dump all trace events and instructions decoded to a text file for reading
+* `--to-stack-txt` - attach an analysis endpoint to dump decoded stack trace traversal to a text file for reading
+* `--to-atomics` - attach an analysis endpoint to dump a trace of atomic operators and their stack frames to a text file for reading
 * `--to-json` - attach an analysis endpoint to dump all trace events to a json file
 * `--to-afdo` - attach an analysis endpoint to convert traces to branch counts and range counts, for afdo tools to consume
-* `--to_gcda` - attach an analysis endpoint to convert traces to a .gcda file. Needs to speicify the source gcno file
+* `--to-gcda` - attach an analysis endpoint to convert traces to a .gcda file. Needs to speicify the source gcno file
   * `--gcno [path/to/.gcno]` - specify the path to the .gcno file for the gcda endpoint to use
-* `--to_speedscope` - attach an analysis endpoint to convert traces to speedscope json format for stack frame visualization
-* `--to_vpp` - attach an analysis endpoint to analyze traces for the path variation time for identifying optimization opportunities
+* `--to-speedscope` - attach an analysis endpoint to convert traces to speedscope json format for stack frame visualization
+* `--to-vpp` - attach an analysis endpoint to analyze traces for the path variation time for identifying optimization opportunities
 
 ### Adding Your Own Analysis Endpoint
 
