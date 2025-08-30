@@ -142,18 +142,6 @@ impl StackUnwinder {
         // print the size of the func_symbol_map
         debug!("func_symbol_map size: {}", func_symbol_map.len());
 
-        // println!( "Loaded {} symbols:", func_symbol_map.len() );
-        // for (addr, info) in func_symbol_map.iter() {
-        //     println!(
-        //         "  {:#016x} -> {} (idx={}), defined at {}:{}",
-        //         addr,
-        //         info.name,
-        //         info.index,
-        //         info.file,
-        //         info.line,
-        //     );
-        // }
-
         // sort the func_symbol_map by address
         let mut func_symbol_addr_sorted = func_symbol_map.keys().cloned().collect::<Vec<u64>>();
         func_symbol_addr_sorted.sort();
@@ -185,14 +173,10 @@ impl StackUnwinder {
 
         if self.func_symbol_map.contains_key(&entry.arc.1) {
             let frame_idx = self.func_symbol_map[&entry.arc.1].index;
-            if entry.event == Event::TrapInterrupt {
-                println!("Pushing idx: {}", frame_idx);
-            }
             self.frame_stack.push(frame_idx);
             return (true, self.frame_stack.len(), Some(self.func_symbol_map[&entry.arc.1].clone()));
         } else {
             // warn!("step_ij: func_symbol_map does not contain the jump address: {:#x}", entry.arc.1);
-            // println!("step_ij: func_symbol_map does not contain the jump address: {:#x}", entry.arc.1);
             return (false, self.frame_stack.len(), None);
         }
     }
@@ -228,7 +212,6 @@ impl StackUnwinder {
         // TODO: Cleaner way instead of hardcoding jalr check
         let is_call = (prev_insn.is_indirect_jump() && prev_insn.get_name().contains("jalr"));
         if is_call {
-            // println!("Got here");
             if let Some(info) = self.func_symbol_map.get(&target) {
                 self.frame_stack.push(info.index);
                 return (true, self.frame_stack.len(), Vec::new(), Some(info.clone()));
