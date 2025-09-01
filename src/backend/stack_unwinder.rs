@@ -208,17 +208,11 @@ impl StackUnwinder {
 
 
         // If we see a CALL (direct or indirect), push the new function
-        let dst = prev_insn.get_dst();
-        // TODO: Cleaner way instead of hardcoding jalr check
-        let is_call = (prev_insn.is_indirect_jump() && prev_insn.get_name().contains("jalr"));
+        let is_call = prev_insn.is_indirect_jump() && self.func_symbol_map.get(&target).is_some();
         if is_call {
-            if let Some(info) = self.func_symbol_map.get(&target) {
-                self.frame_stack.push(info.index);
-                return (true, self.frame_stack.len(), Vec::new(), Some(info.clone()));
-            } else {
-                // call into something we don't know
-                return (false, self.frame_stack.len(), Vec::new(), None);
-            }
+            let info = self.func_symbol_map.get(&target).unwrap().clone();
+            self.frame_stack.push(info.index);
+            return (true, self.frame_stack.len(), Vec::new(), Some(info));
         }
 
         // Otherwise, if it's an indirect jump *and* we still have frames,
