@@ -206,8 +206,7 @@ impl StackUnwinder {
             }
         }
 
-
-        // If we see a CALL (direct or indirect), push the new function
+        // If we see a CALL (indirect), push the new function
         let is_call = prev_insn.is_indirect_jump() && self.func_symbol_map.get(&target).is_some();
         if is_call {
             let info = self.func_symbol_map.get(&target).unwrap().clone();
