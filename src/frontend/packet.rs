@@ -73,36 +73,29 @@ pub fn read_packet(stream: &mut BufReader<File>) -> Result<Packet> {
             // println!("f_header: {:?}", f_header);
             match f_header {
                 FHeader::FTb | FHeader::FNt | FHeader::FIj => {
-                    let timestamp = read_varint(stream)?;
-                    packet.timestamp = timestamp;
+                    packet.timestamp = read_varint(stream)?;
                     packet.f_header = f_header;
                     packet.c_header = CHeader::CNa;
                 }
                 FHeader::FUj => {
-                    let target_address = read_varint(stream)?;
-                    packet.target_address = target_address;
-                    let timestamp = read_varint(stream)?;
-                    packet.timestamp = timestamp;
+                    packet.target_address = read_varint(stream)?;
+                    packet.timestamp = read_varint(stream)?;
                     packet.f_header = f_header;
                     packet.c_header = CHeader::CNa;
                 }
                 FHeader::FSync => {
                     let _ = read_varint(stream)?; // branch mode, unused in sync end packets
-                    let target_address = read_varint(stream)?;
-                    packet.target_address = target_address;
-                    let timestamp = read_varint(stream)?;
-                    packet.timestamp = timestamp;
+                    packet.target_address = read_varint(stream)?;
+                    packet.timestamp = read_varint(stream)?;
                     packet.f_header = f_header;
                     packet.c_header = CHeader::CNa;
                 }
                 FHeader::FTrap => {
                     let trap_type = TrapType::from((first_byte & TRAP_TYPE_MASK) >> TRAP_TYPE_OFFSET);
                     packet.trap_type = trap_type;
-                    let trap_address = read_varint(stream)?;
-                    packet.trap_address = trap_address;
-                    let target_address = read_varint(stream)?;
-                    packet.target_address = target_address;
-                    let timestamp = read_varint(stream)?;
+                    packet.trap_address = read_varint(stream)?;
+                    packet.target_address = read_varint(stream)?;
+                    packet.timestamp = read_varint(stream)?;
                     packet.timestamp = timestamp;
                     packet.f_header = f_header;
                     packet.c_header = CHeader::CNa;

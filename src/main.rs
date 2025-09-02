@@ -252,10 +252,10 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             bus.broadcast(Entry::new_timed_event(Event::End, packet.timestamp, pc, 0));
             break;
         } else if packet.f_header == FHeader::FTrap {
-            pc = step_bb_until(pc, &insn_map, packet.trap_address, &mut bus);
+            pc = step_bb_until(pc, &insn_map, refund_addr(packet.trap_address), &mut bus);
             pc = refund_addr(packet.target_address ^ (pc >> 1));
             timestamp += packet.timestamp;
-            bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, packet.trap_address, pc));
+            bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, refund_addr(packet.trap_address), pc));
         } else if mode_is_predict && packet.f_header == FHeader::FTb { // predicted hit
             bus.broadcast(Entry::new_timed_event(Event::BPHit, packet.timestamp, pc, pc));
             // predict for timestamp times
