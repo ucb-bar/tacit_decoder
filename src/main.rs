@@ -18,10 +18,13 @@ mod backend {
     pub mod event;
     pub mod stats_receiver;
     pub mod txt_receiver;
+    pub mod stack_txt_receiver;
+    pub mod atomic_receiver;
     pub mod afdo_receiver;
     pub mod gcda_receiver;
     pub mod stack_unwinder;
     pub mod speedscope_receiver;
+    pub mod perfetto_receiver;
     pub mod vpp_receiver;
     pub mod foc_receiver;
     pub mod vbb_receiver;
@@ -51,10 +54,13 @@ use frontend::br_mode::BrMode;
 use backend::event::{Entry, Event};
 use backend::stats_receiver::StatsReceiver;
 use backend::txt_receiver::TxtReceiver;
+use backend::stack_txt_receiver::StackTxtReceiver;
+use backend::atomic_receiver::AtomicReceiver;
 use backend::afdo_receiver::AfdoReceiver;
 use backend::abstract_receiver::AbstractReceiver;
 use backend::gcda_receiver::GcdaReceiver;
 use backend::speedscope_receiver::SpeedscopeReceiver;
+use backend::perfetto_receiver::PerfettoReceiver;
 use backend::vpp_receiver::VPPReceiver;
 use backend::foc_receiver::FOCReceiver;
 use backend::vbb_receiver::VBBReceiver;
@@ -97,6 +103,12 @@ struct Args {
     // output the decoded trace in text format
     #[arg(long, default_value_t = true)]
     to_txt: bool,
+    // output the tracked callstack in text format
+    #[arg(long, default_value_t = false)]
+    to_stack_txt: bool,
+    // output a trace of atomic operations in text format 
+    #[arg(long, default_value_t = false)]
+    to_atomics: bool,
     // output the decoded trace in afdo format
     #[arg(long, default_value_t = false)]
     to_afdo: bool,
@@ -109,6 +121,9 @@ struct Args {
     // output the decoded trace in speedscope format
     #[arg(long, default_value_t = false)]
     to_speedscope: bool,
+    // output the decoded trace in perfetto format
+    #[arg(long, default_value_t = false)]
+    to_perfetto: bool,
     // output the decoded trace in vpp format
     #[arg(long, default_value_t = false)]
     to_vpp: bool,
@@ -237,10 +252,10 @@ fn trace_decoder(args: &Args, mut bus: Bus<Entry>) -> Result<()> {
             bus.broadcast(Entry::new_timed_event(Event::End, packet.timestamp, pc, 0));
             break;
         } else if packet.f_header == FHeader::FTrap {
-            pc = step_bb_until(pc, &insn_map, packet.trap_address, &mut bus);
+            pc = step_bb_until(pc, &insn_map, refund_addr(packet.from_address), &mut bus);
             pc = refund_addr(packet.target_address ^ (pc >> 1));
             timestamp += packet.timestamp;
-            bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, packet.trap_address, pc));
+            bus.broadcast(Entry::new_timed_trap(packet.trap_type, timestamp, refund_addr(packet.from_address), pc));
         } else if mode_is_predict && packet.f_header == FHeader::FTb { // predicted hit
             bus.broadcast(Entry::new_timed_event(Event::BPHit, packet.timestamp, pc, pc));
             // predict for timestamp times
@@ -367,6 +382,17 @@ fn main() -> Result<()> {
         receivers.push(Box::new(TxtReceiver::new(txt_bus_endpoint)));
     }
 
+    if args.to_stack_txt {
+        let stack_txt_rx = StackTxtReceiver::new(bus.add_rx(), args.binary.clone());
+        receivers.push(Box::new(stack_txt_rx));
+    }
+
+    if args.to_atomics {
+        let atomic_rx = AtomicReceiver::new(bus.add_rx(), args.binary.clone());
+        receivers.push(Box::new(atomic_rx));
+    }
+
+
     if args.to_afdo {
         let afdo_bus_endpoint = bus.add_rx();
         let mut elf_file = File::open(args.binary.clone())?;
@@ -385,6 +411,11 @@ fn main() -> Result<()> {
     if args.to_speedscope {
         let speedscope_bus_endpoint = bus.add_rx();
         receivers.push(Box::new(SpeedscopeReceiver::new(speedscope_bus_endpoint, args.binary.clone())));
+    }
+
+    if args.to_perfetto {
+        let perfetto_bus_endpoint = bus.add_rx();
+        receivers.push(Box::new(PerfettoReceiver::new(perfetto_bus_endpoint, args.binary.clone())));
     }
 
     if args.to_vpp {

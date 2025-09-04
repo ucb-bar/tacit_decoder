@@ -13,7 +13,7 @@ authors = ["iansseijelly"]
 
 [dependencies]
 object = "0.36"
-rvdasm = "0.1.7"
+rvdasm = "0.2.0"
 clap = { version = "4.5.32", features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 bus = "2.4.1"

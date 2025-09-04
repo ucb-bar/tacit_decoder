@@ -30,13 +30,13 @@ pub struct SymbolInfo {
 
 pub struct StackUnwinder {
     // addr -> symbol info <name, index, line, file>
-    func_symbol_map: IndexMap<u64, SymbolInfo>,
+    pub func_symbol_map: IndexMap<u64, SymbolInfo>,
     // index -> addr range
-    idx_2_addr_range: IndexMap<u32, (u64, u64)>,
+    pub idx_2_addr_range: IndexMap<u32, (u64, u64)>,
     // addr -> insn
-    insn_map: HashMap<u64, Insn>,
+    pub insn_map: HashMap<u64, Insn>,
     // stack model
-    frame_stack: Vec<u32>, // Queue of index
+    pub frame_stack: Vec<u32>, // Queue of index
 }
 
 impl StackUnwinder {
@@ -170,6 +170,7 @@ impl StackUnwinder {
     // return (success, frame_stack_size, symbol_info)
     pub fn step_ij(&mut self, entry: Entry) -> (bool, usize, Option<SymbolInfo>) {
         assert!(entry.event == Event::InferrableJump || entry.event == Event::TrapException || entry.event == Event::TrapInterrupt);
+
         if self.func_symbol_map.contains_key(&entry.arc.1) {
             let frame_idx = self.func_symbol_map[&entry.arc.1].index;
             self.frame_stack.push(frame_idx);
@@ -180,47 +181,70 @@ impl StackUnwinder {
         }
     }
 
-    pub fn step_uj(&mut self, entry: Entry) -> (bool, usize, Vec<SymbolInfo>, Option<SymbolInfo>) {
-        assert!(entry.event == Event::UninferableJump || entry.event == Event::TrapReturn);
-        // get the previous instruction - is it a ret or c.jr ra?
-        let prev_insn = self.insn_map.get(&entry.arc.0).unwrap();
-        let target_frame_addr = entry.arc.1;
-        let mut closed_frames = Vec::new();
-        // if we come in with an empty stack, we did not close any frames
-        if self.frame_stack.is_empty() {
-            return (false, self.frame_stack.len(), closed_frames, None);
+
+    pub fn step_uj(&mut self, entry: Entry) 
+        -> (bool, usize, Vec<SymbolInfo>, Option<SymbolInfo>) 
+    {
+        assert!(entry.event == Event::UninferableJump 
+            || entry.event == Event::TrapReturn);
+
+        // Address of the branch instruction (the "previous insn")
+        let prev_insn = self.insn_map.get(&entry.arc.0)
+            .expect("missing insn in map");
+        let target = entry.arc.1;
+        let mut closed = Vec::new();
+
+        // 1) mret: always pop exactly one frame
+        if entry.event == Event::TrapReturn {
+            if let Some(idx) = self.frame_stack.pop() {
+                let start = self.idx_2_addr_range[&idx].0;
+                let sym = self.func_symbol_map[&start].clone();
+                return (true, self.frame_stack.len(), vec![sym], None);
+            } else {
+                // nothing to pop
+                return (false, 0, Vec::new(), None);
+            }
         }
-        if prev_insn.is_indirect_jump() {
+
+        // If we see a CALL (indirect), push the new function
+        let is_call = prev_insn.is_indirect_jump() && self.func_symbol_map.get(&target).is_some();
+        if is_call {
+            let info = self.func_symbol_map.get(&target).unwrap().clone();
+            self.frame_stack.push(info.index);
+            return (true, self.frame_stack.len(), Vec::new(), Some(info));
+        }
+
+        // Otherwise, if it's an indirect jump *and* we still have frames,
+        //    treat it like a return within the unwinding loop.
+        if prev_insn.is_indirect_jump() && !self.frame_stack.is_empty() {
             loop {
-                // peek the top of the stack
-                if let Some(frame_idx) = self.frame_stack.last() {
-                    // if this function range is within the target frame range, we can stop
-                    let (start, end) = self.idx_2_addr_range[frame_idx];
-                    if target_frame_addr >= start && target_frame_addr < end {
-                        return (true, self.frame_stack.len(), closed_frames, None);
-                    }
-                    // if not, pop the stack
-                    if let Some(frame_idx) = self.frame_stack.pop() {
-                        let func_start_addr = self.idx_2_addr_range[&frame_idx].0;
-                        closed_frames.push(self.func_symbol_map[&func_start_addr].clone());
-                    }
-                // could have dropped to a frame outside the target range
-                } else {
-                    // is this a tail call?
-                    if self.func_symbol_map.contains_key(&entry.arc.1) {
-                        // push the new frame
-                        self.frame_stack.push(self.func_symbol_map[&entry.arc.1].index);
-                        return (true, self.frame_stack.len(), closed_frames, Some(self.func_symbol_map[&entry.arc.1].clone()));
+                let &idx = self.frame_stack.last().unwrap();
+                let (start, end) = self.idx_2_addr_range[&idx];
+                // still inside the same function?
+                if target >= start && target < end {
+                    return (true, self.frame_stack.len(), closed, None);
+                }
+                // else pop one more
+                let popped = self.frame_stack.pop().unwrap();
+                let func_start = self.idx_2_addr_range[&popped].0;
+                closed.push(self.func_symbol_map[&func_start].clone());
+
+                if self.frame_stack.is_empty() {
+                    // maybe it was a tail‐call
+                    if let Some(info) = self.func_symbol_map.get(&target) {
+                        self.frame_stack.push(info.index);
+                        return (true, self.frame_stack.len(), closed, Some(info.clone()));
                     } else {
-                        return (true, self.frame_stack.len(), closed_frames, None);
+                        return (true, 0, closed, None);
                     }
                 }
-            } 
-        } else {
-            // not a return
-            return (false, self.frame_stack.len(), closed_frames, None);
+            }
         }
+
+        // Not a call, not a return: nothing changes.
+        (false, self.frame_stack.len(), Vec::new(), None)
     }
+
 
     pub fn flush(&mut self) -> Vec<SymbolInfo> {
         let mut closed_frames = Vec::new();
@@ -233,5 +257,16 @@ impl StackUnwinder {
 
     pub fn get_symbol_info(&self, addr: u64) -> SymbolInfo {
         self.func_symbol_map[&addr].clone()
+    }
+
+    pub fn current_frame_addrs(&self) -> Vec<u64> {
+        self.frame_stack
+            .iter()
+            .map(|idx| {
+                // look up the (start, end) tuple for this frame index
+                let (start, _end) = self.idx_2_addr_range[idx];
+                start
+            })
+            .collect()
     }
 }
