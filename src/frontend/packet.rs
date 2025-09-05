@@ -86,8 +86,6 @@ pub fn read_packet(stream: &mut BufReader<File>) -> Result<Packet> {
                     packet.c_header = CHeader::CNa;
                 }
                 FHeader::FSync => {
-                    packet.ctx = read_varint(stream)?;
-                    packet.from_address = read_varint(stream)?;
                     packet.target_address = read_varint(stream)?;
                     packet.timestamp = read_varint(stream)?;
                     packet.f_header = f_header;
@@ -96,7 +94,6 @@ pub fn read_packet(stream: &mut BufReader<File>) -> Result<Packet> {
                 FHeader::FTrap => {
                     let trap_type = TrapType::from((first_byte & TRAP_TYPE_MASK) >> TRAP_TYPE_OFFSET);
                     packet.trap_type = trap_type;
-                    packet.ctx = read_varint(stream)?;
                     packet.from_address = read_varint(stream)?;
                     packet.target_address = read_varint(stream)?;
                     packet.timestamp = read_varint(stream)?;
